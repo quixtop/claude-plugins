@@ -1,0 +1,21 @@
+{
+  "name": "quixtop",
+  "owner": {
+    "name": "quixtop",
+    "url": "https://www.quixtop.com"
+  },
+  "metadata": {
+    "description": "quixtop's plugins for Claude Code",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "ctxbar",
+      "source": "./plugins/ctxbar"
+    },
+    {
+      "name": "ensemble",
+      "source": "./plugins/ensemble"
+    }
+  ]
+}

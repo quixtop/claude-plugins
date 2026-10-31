@@ -1,0 +1,7 @@
+{
+  "name": "ensemble",
+  "version": "0.1.0",
+  "description": "/ensemble opens or closes the project's Ensemble ledger in a side pane: what runs where, by feature. Other mods open or close it with $.ensemble.toggle() and read its badge (ctxbar's ⧉ icon)",
+  "author": { "name": "shrix" },
+  "types": "./types/index.d.ts"
+}

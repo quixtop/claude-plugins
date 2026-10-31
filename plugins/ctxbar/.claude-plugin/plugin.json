@@ -1,0 +1,27 @@
+{
+  "name": "ctxbar",
+  "version": "0.1.0",
+  "description": "The context window as one row above the prompt, a colour per category, opened by the plan's weekly usage with its reset countdown; hover a segment or a figure for its name. While work runs, a running bar with a lane per task (turn, background shells, subagents). Steps aside while another mod draws above the prompt. /ctxbar shows or hides it. A task icon closes both rows and opens a task pane over the /todo list (folders, add, tick, rename, reorder, delete); /ctxbar tasks opens it at any width. With the ensemble mod loaded and a ledger here, an Ensemble icon just before it opens that mod's pane.",
+  "author": { "name": "shrix" },
+  "userConfig": {
+    "pillMaxWidth": {
+      "type": "number",
+      "title": "Task pill: widest (px)",
+      "description": "The widest a running task's pill gets, its padding included; longer task names end in '…'. Kept between room for a short name and its count (36 plus twice the padding) and 400.",
+      "default": 100
+    },
+    "pillPadding": {
+      "type": "number",
+      "title": "Task pill: padding (px)",
+      "description": "Room either side of a running task's name in its pill. Kept between 0 and 24.",
+      "default": 8
+    },
+    "waveSeconds": {
+      "type": "number",
+      "title": "Lane wave: seconds a crossing",
+      "description": "How long the wave of re-scattering dots takes to cross a running task's trail, from its start to the pill; fewer seconds is faster. Kept between 2 and 30.",
+      "default": 4.8
+    }
+  },
+  "types": "./types/index.d.ts"
+}
