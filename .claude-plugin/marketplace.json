@@ -18,6 +18,10 @@
       "source": "./plugins/ensemble"
     },
     {
+      "name": "todo",
+      "source": "./plugins/todo"
+    },
+    {
       "name": "secret-guard",
       "source": "./plugins/secret-guard"
     },

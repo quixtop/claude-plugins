@@ -76,45 +76,6 @@ export type Running = {
   tool?: string; target?: string; call?: string; doingSince?: number
 }
 
-// What `todo.py --json` prints (spec docs/spec/ctxbar-task-panel.md § 4.4, 4.7).
-export type Item = { key: string; title: string; done: boolean; nth: number }
-export type FolderView = { name: string; label: string; pending: number; done: number; items: Item[] }
-export type TaskState = {
-  version: 1
-  path: string
-  state: 'list' | 'nofile'
-  mtimeMs: number | null
-  size: number | null
-  folders: FolderView[]
-  undo?: string // from a save that wrote: what `todo.py --json undo --token=` takes to put it back
-}
-export type ErrorKind = 'input' | 'read' | 'write' | 'busy' | 'conflict' | 'internal' | 'process' | 'version'
-export type TaskError = { kind: ErrorKind; error: string; state?: TaskState }
-
-// The task pane's view (spec § 4.5, A3, A12, A19): what todo.py last answered and what the
-// person is doing in the pane.
-export type TasksView = {
-  result: TaskState | TaskError | null // null: reading…
-  editError: string | null // the inline line after a failed edit, until the next good one
-  pinned: { id: string; done: boolean }[] // ticked/unticked rows held in place 10 s (A19): `folder\0title\0nth` and the state the edit left; one whose task changed state again is let go
-  inFlight: string[] // row keys (and `folder:<label>`) with an edit queued: drawn dim, take no press
-  showCompleted: boolean
-  shown: number // pending rows shown before "show more"
-  shownDone: number // completed rows shown before "show more"
-  renaming: { key: string; draft: string } | null
-  folderDraft: string | null // '' while the new-folder field is open (its text lives in the Input), null while closed
-  folderRename: { label: string; draft: string } | null
-  confirmDelete: string | null // the folder label whose delete asks
-  adding: boolean // the add field is open: the title row's + opens it, the + again or Esc closes it
-  addAt: { id: string; where: 'below' | 'above' } | null // o / b: the add field opens under or over this task (its `folder\0title\0nth`), not at the top
-  picking: boolean // the folder list is open under the title: it or its ▼ opens and closes it, a pick closes it
-  touched: string | null // the key of the open field typed in since it opened: only then does its ✓ show
-  selected: string | null // the task j / k landed on (`folder\0title\0nth`): highlighted, its icons shown; t r i a dd o b and Enter act on it
-  addDraft: string // the add field's text, put back after a failed add
-  adds: number // successful adds: the add field's key, so a new, empty field follows each one
-  readAt: number // ms since the epoch of the last read
-}
-
 declare module 'claude-code' {
   interface PluginState {
     ctxbar: {
@@ -125,14 +86,6 @@ declare module 'claude-code' {
       now: number // ms since the epoch the countdowns and the running time are read against
       redrawAt: number // ms since the epoch the desktop row was last asked to draw anew: only when what it shows changes
       work: Work
-      tasksOpen: boolean // the task pane is drawn; the icon draws normal, else dim
-      tasksPending: Shaped<{ total: number; by: Record<string, number> } | null> // pending tasks at the last read, in all and by folder label, for the icon's tag; null before one
-      tasksFolder: string | null // the selected folder's label; null, or one gone (an earlier build's All, ''): the pane shows the first folder, the icon's tag counts all
-      tasksView: Shaped<TasksView>
-      tasksFocus: string | null // the element key the pane's focus ring holds; read only on a key press
-      tasksTop: Shaped<{ top: number; at: number; n: number } | null> // the list's first entry when the pane moved it, the engine's window then, and its number
-      tasksSent: Shaped<Record<string, number>> // the tasks sent this session (folder, title, copy) → prompts their tint has left
-      tasksColours: Record<string, number> // folder name (trimmed, lower case) → its HUES index; kept in $.store too
     }
   }
 }

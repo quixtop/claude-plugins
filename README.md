@@ -15,13 +15,25 @@ To pick up newer versions: `/plugin marketplace update quixtop`.
 ## ctxbar — the context window above the prompt
 
 The context window as one row above the prompt, a colour per category, with the plan's weekly usage and its reset
-countdown; while work runs, a lane per task. A task icon opens a pane over your `/todo` list.
+countdown; while work runs, a lane per task. With the todo plugin installed, a task icon opens its Tasks pane.
 
 ```
 /plugin install ctxbar@quixtop
 ```
 
-`/ctxbar` shows or hides it. The task pane needs the [todo](https://www.quixtop.com/apps) skill.
+`/ctxbar` shows or hides it.
+
+## todo — your /todo list and its Tasks pane
+
+A personal todo list in a markdown file you choose, folders as `##` headings. A bare `/todo` opens or closes a
+Tasks pane beside the chat — add, tick, rename, reorder and delete, with Gmail- and vi-style keys; `/todo <words>`
+runs them (`add`, `remove`, `completed`, …). The todo skill rides inside the plugin.
+
+```
+/plugin install todo@quixtop
+```
+
+Needs Python 3.
 
 ## ensemble — the Ensemble ledger in a side pane
 

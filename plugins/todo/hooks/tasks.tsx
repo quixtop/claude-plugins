@@ -2,19 +2,22 @@
 // author: shrix
 // The task pane: a small Tasks app over the /todo file, docked beside the transcript. todo.py is
 // the only reader and writer; the pane runs it with argv and draws what it prints (spec
-// docs/spec/ctxbar-task-panel.md). register.tsx calls registerTasks(on), tasksSessionStart($)
-// and tasksTurnEnd($), routes /ctxbar tasks to togglePane($), and draws the icon.
+// ~/.agents/skills/ctxbar/docs/spec/ctxbar-task-panel.md). register.tsx calls registerTasks(on), tasksSessionStart($)
+// and tasksTurnEnd($), serves /todo with todoCommand($) and the noun with toggleBadge($); another mod's icon (ctxbar's)
+// reads the badge.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { TasksView } from '../types'
+import type { TasksView, TodoBadge } from '../types'
 import {
-  type FolderView, type Item, type PendingCount, type TaskError, type TaskOp, type TaskState, argvEdit, argvRead, assignColours, checkFolder,
-  checkTitle, colourKey, isError, newestFirst, parseResult, ringAfterSave, tildePath, todoPy,
+  type FolderView, type Item, type PendingCount, type TaskError, type TaskOp, type TaskState, argvEdit, argvRead, assignColours, bundledTodoPy, checkFolder,
+  checkTitle, colourKey, isError, newestFirst, parseResult, ringAfterSave, tildePath,
 } from './taskfile'
-import { HUES } from './work'
 
-const PANE = 'ctxbar-tasks'
+// The folders' colours: the ctxbar mod's lane palette (its work.ts HUES), copied as the one value the pane needs.
+const HUES = ['#4F8FEA', '#D29A2E', '#2BB3A3', '#E06C9F', '#6DBE45', '#E8834A', '#3CB8E0']
+
+const PANE = 'todo-tasks'
 const TITLE = 'Tasks'
 const RUN_TIMEOUT_MS = 5_000 // spec 4.7: a todo.py run that takes longer is a `process` error
 const CHECK_MS = 60_000 // spec A15: the open pane's own look at the file
@@ -37,7 +40,7 @@ const SELECTED_PLAIN = '#E6E6E6' // the selected row's ground when it has no col
 const MTIME_SLACK_MS = 1 // todo.py's mtime (ns / 1e6) and the engine's differ in the last digits
 const TOP = '(no folder)' // todo.py's label for the lines above the first heading
 const FIRST_FOLDER = 'gen' // where a first task goes (todo.py starts this folder)
-const LOG = 'ctxbar tasks: '
+const LOG = 'todo: '
 
 // The folder row stays on top (owner 30 Oct 2026). A docked pane on a graphical surface draws its
 // own window: the tree is the pane's room tall plus a row of scroll per list entry (a task, a field,
@@ -65,24 +68,48 @@ const EMPTY_VIEW: TasksView = {
   ...CLEAN, addDraft: '', adds: 0, readAt: 0,
 }
 
-const tasksOpen = atom({ plugin: 'ctxbar', key: 'tasksOpen' } as const, false)
-const tasksPending = atom({ plugin: 'ctxbar', key: 'tasksPending' } as const, null as PendingCount | null, { shape: 'tasks-pending-2' })
-const tasksFolder = atom({ plugin: 'ctxbar', key: 'tasksFolder' } as const, null as string | null)
-const tasksView = atom({ plugin: 'ctxbar', key: 'tasksView' } as const, EMPTY_VIEW, { shape: 'tasks-view-11' })
-const tasksColours = atom({ plugin: 'ctxbar', key: 'tasksColours' } as const, {} as Record<string, number>)
+const tasksOpen = atom({ plugin: 'todo', key: 'tasksOpen' } as const, false)
+const tasksPending = atom({ plugin: 'todo', key: 'tasksPending' } as const, null as PendingCount | null, { shape: 'tasks-pending-2' })
+const tasksFolder = atom({ plugin: 'todo', key: 'tasksFolder' } as const, null as string | null)
+const tasksView = atom({ plugin: 'todo', key: 'tasksView' } as const, EMPTY_VIEW, { shape: 'tasks-view-11' })
+const tasksColours = atom({ plugin: 'todo', key: 'tasksColours' } as const, {} as Record<string, number>)
 // What the focus ring holds: written on every move, read only when a key is pressed, never
 // while drawing, so moving the focus redraws nothing (A12, A14).
-const tasksFocus = atom({ plugin: 'ctxbar', key: 'tasksFocus' } as const, null as string | null)
+const tasksFocus = atom({ plugin: 'todo', key: 'tasksFocus' } as const, null as string | null)
 // The tasks sent this session, by identity (pinId), each with the prompts its tint has left; one
 // done or gone drops out.
-const tasksSent = atom({ plugin: 'ctxbar', key: 'tasksSent' } as const, {} as Record<string, number>, { shape: 'tasks-sent-2' })
+const tasksSent = atom({ plugin: 'todo', key: 'tasksSent' } as const, {} as Record<string, number>, { shape: 'tasks-sent-2' })
 // Where the pane draws the list from when it moved the list itself (j / k, the person's wheel tick
 // or scroll key landed by the `ui.scroll` hook): its first entry, and the engine's window it was set
 // against; it holds only while the engine's window still stands there, so a move the hook never
 // saw (the scroll bar dragged) wins. The engine moves a plugin's own `$.ui.scroll` without handing it
 // to the pane's hook (owner 31 Oct 2026, seen on the desktop), so j / k can't land the engine's
 // window where they want; a write here redraws the pane even when the engine's window stays put.
-const tasksTop = atom({ plugin: 'ctxbar', key: 'tasksTop' } as const, null as { top: number; at: number; n: number } | null, { shape: 'tasks-top-2' })
+const tasksTop = atom({ plugin: 'todo', key: 'tasksTop' } as const, null as { top: number; at: number; n: number } | null, { shape: 'tasks-top-2' })
+// What another mod's icon reads (ctxbar's task icon), as any mod's value may be read: the pane up or not, the pending
+// count and the folder chosen. Written whenever one of them changes, never derived by the reader. NO_BADGE until the
+// session start writes it, and the noun's answer when no hook of this mod serves it.
+export const NO_BADGE: TodoBadge = { available: false, open: false, pending: null, folder: null }
+const badge = atom({ plugin: 'todo', key: 'badge' } as const, NO_BADGE)
+let badging: Promise<void> = Promise.resolve()
+// The badge as this module last wrote it: the change is merged into it and compared with it, never with a read back in
+// the same dispatch (a dispatch's reads may not see its own writes). Null after a reload: the session start writes anew.
+let written: TodoBadge | null = null
+const sameCounts = (a: TodoBadge['pending'], b: TodoBadge['pending']) =>
+  a === b || (a !== null && b !== null && a.total === b.total && Object.keys(a.by).length === Object.keys(b.by).length &&
+    Object.keys(a.by).every(k => Object.hasOwn(b.by, k) && a.by[k] === b.by[k]))
+const sameBadge = (a: TodoBadge, b: TodoBadge) => a.available === b.available && a.open === b.open && a.folder === b.folder && sameCounts(a.pending, b.pending)
+// One write at a time, the change carried in, and only when the badge changed: every write redraws its readers
+// (mod-design rule 22). Never throws: a failed write leaves the icon as it was until the next change.
+function syncBadge($: EngineInterface, change: Partial<TodoBadge>): Promise<void> {
+  badging = badging.catch(() => undefined).then(async () => {
+    const next: TodoBadge = { ...(written ?? NO_BADGE), ...change, available: true }
+    if (written !== null && sameBadge(written, next)) return
+    await update($, badge, () => next)
+    written = next
+  })
+  return badging.catch(() => $.ui.log(`${LOG}badge not written`, { to: 'debug' }))
+}
 // The tasks loaded into the prompt box (◀ or l) since the last send; the person's next send tints
 // those whose title it holds (owner 31 Oct 2026).
 let loaded: { id: string; title: string }[] = []
@@ -168,11 +195,16 @@ async function homeOf($: EngineInterface) {
   return answer ?? ''
 }
 
-// ~/.agents first, as before; a check that cannot answer keeps it
+// The skill inside this mod's own folder; a root or a check that cannot answer falls back to the folder Claude Code
+// links the mod from, ~/.claude/skills/todo
 async function py($: EngineInterface) {
-  const h = await homeOf($)
-  const inAgents = await $.fs.exists(todoPy(h)).then(found => found !== false, () => true)
-  return todoPy(h, inAgents)
+  try {
+    const root = $.plugin.root
+    if (typeof root === 'string' && root !== '' && (await $.fs.exists(bundledTodoPy(root)))) return bundledTodoPy(root)
+  } catch {
+    // the root cannot answer: the linked folder below
+  }
+  return bundledTodoPy(`${await homeOf($)}/.claude/skills/todo`)
 }
 
 async function runTodo($: EngineInterface, argv: string[]): Promise<TaskState | TaskError> {
@@ -193,10 +225,12 @@ async function remember($: EngineInterface, r: TaskState | TaskError, rename?: {
   const state = isError(r) ? r.state : r
   if (!state) return
   try {
-    await update($, tasksPending, () => ({
+    const counts = {
       total: state.folders.reduce((n, f) => n + f.pending, 0),
       by: Object.fromEntries(state.folders.map(f => [f.label, f.pending])),
-    }))
+    }
+    await update($, tasksPending, () => counts)
+    await syncBadge($, { pending: counts })
     await paint($, state, rename)
   } catch {
     $.ui.log(`${LOG}colours failed`, { to: 'debug' })
@@ -434,6 +468,14 @@ export function togglePane($: EngineInterface): Promise<void> {
   return toggling
 }
 
+// `$.todo.toggle()` for another mod's icon (ctxbar's task icon and `/ctxbar tasks`): the pane opened or closed as
+// `/todo` does it; answers the badge as the toggle wrote it, never read back in the same dispatch.
+export async function toggleBadge($: EngineInterface): Promise<TodoBadge> {
+  await togglePane($)
+  await badging.catch(() => undefined)
+  return written ?? NO_BADGE
+}
+
 // Whether the pane is still up. A pane whose drawing threw is dropped with no close hook run, so
 // tasksOpen alone can say open for a pane that is gone. Can't tell → up, as tasksOpen says.
 async function paneUp($: EngineInterface): Promise<boolean> {
@@ -456,6 +498,7 @@ async function toggle($: EngineInterface): Promise<void> {
     return
   }
   await update($, tasksOpen, () => true)
+  await syncBadge($, { open: true })
   forgetTyping()
   await update($, tasksFocus, () => null) // no row control from an earlier opening
   await view($, v => ({ ...v, ...CLEAN, editError: null, pinned: [] }))
@@ -469,7 +512,10 @@ async function restoreChoice($: EngineInterface) {
   const stored = await $.store.get('tasks').catch(() => undefined)
   if (typeof stored !== 'object' || stored === null) return
   const { folder } = stored as Record<string, unknown>
-  if ((await read($, tasksFolder)) === null && (typeof folder === 'string' || folder === null)) await update($, tasksFolder, () => folder)
+  if ((await read($, tasksFolder)) === null && (typeof folder === 'string' || folder === null)) {
+    await update($, tasksFolder, () => folder)
+    await syncBadge($, { folder })
+  }
 }
 
 async function closed($: EngineInterface) {
@@ -479,6 +525,7 @@ async function closed($: EngineInterface) {
   await update($, tasksTop, () => null) // a pane opened again starts where the engine's window stands
   armedD = null
   await update($, tasksOpen, () => false)
+  await syncBadge($, { open: false })
   stopCheck()
 }
 
@@ -498,15 +545,19 @@ async function choose($: EngineInterface, folder: string | null) {
 // opens there.
 async function follow($: EngineInterface, folder: string | null) {
   await update($, tasksFolder, () => folder)
+  await syncBadge($, { folder })
   await $.store.set('tasks', { folder }).catch(() => undefined)
 }
 
 // A session start, a reload of the mod included: the pane's open state from the engine, the
-// work a cut-off edit left marked dropped, and the open pane's check started again (I4).
+// work a cut-off edit left marked dropped, and the open pane's check started again (I4). The
+// badge says the mod is here from now on.
 export async function tasksSessionStart($: EngineInterface): Promise<void> {
   const panes = await $.ui.panes().catch(() => [])
   const open = panes.some(p => p.id === PANE)
   await update($, tasksOpen, () => open)
+  // the counts and folder as kept before this start (a reload keeps the session's values); none written yet here
+  await syncBadge($, { open, pending: await read($, tasksPending), folder: await read($, tasksFolder) })
   await view($, v => ({ ...v, ...CLEAN, inFlight: [], pinned: [] }))
   if (open) {
     await seedColours($)

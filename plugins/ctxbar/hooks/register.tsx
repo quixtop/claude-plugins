@@ -7,8 +7,8 @@
 // colour, then the free space and the compaction reserve alike as one straight grey line; on the
 // desktop the bar is as tall as the pills.
 // The share in use comes last before the task icon (✓), which closes both rows and opens the
-// task pane (tasks.tsx); the Ensemble icon (⧉) sits just before it while the ensemble mod has
-// a ledger here. While anything runs (the main turn, a background
+// todo mod's task pane while that mod is loaded; the Ensemble icon (⧉) sits just before it while
+// the ensemble mod has a ledger here. While anything runs (the main turn, a background
 // shell, a subagent) the row is the running bar instead: the dot, the week's quota used, a
 // lane for each task with its own dotted trail of work done (work.ts), the running time, the icon.
 // Hovering a segment, a lane or a usage figure lays a small tag naming it over the row (on the
@@ -20,8 +20,6 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionRateLimit, Timer } from 'claude-code'
 
 import type { Diff, Limit, Reading, Slice, Work } from '../types'
-import { registerTasks, tasksSessionStart, tasksTurnEnd, todoCommand, togglePane } from './tasks'
-import { type PendingCount, iconTag } from './taskfile'
 import {
   CHIP_GREY, DOT_PX, EASE_S, FINISH_MS, IDLE, LANE_H, PILL_H, WIDER_AT_MS, addShell, agentRest, agentStep, callOver, clearSvg, targetOf, chipSvg, clockSvg, clockTime, dotColour, dotSvg, elapsed, ended, isRunning,
   gyrOf, laneCells, lanePill, laneSvg, lighten, liveCount, pillSize, pillSvg, promptCall, timeTagInk, tagSvg, tagWidth, textSvg,
@@ -186,10 +184,27 @@ const clockAt = atom({ plugin: 'ctxbar', key: 'now' } as const, 0)
 // drawn anew only when something it shows changes (deskChanged), not every second.
 const redrawAt = atom({ plugin: 'ctxbar', key: 'redrawAt' } as const, 0)
 const work = atom({ plugin: 'ctxbar', key: 'work' } as const, IDLE)
-// The task pane's state the icon draws from; tasks.tsx writes it (the same plugin and key).
-const tasksOpen = atom({ plugin: 'ctxbar', key: 'tasksOpen' } as const, false)
-const tasksPending = atom({ plugin: 'ctxbar', key: 'tasksPending' } as const, null as PendingCount | null, { shape: 'tasks-pending-2' })
-const tasksFolder = atom({ plugin: 'ctxbar', key: 'tasksFolder' } as const, null as string | null)
+// What the todo mod publishes for the task icon (its `badge`), read as any mod's value may be:
+// ctxbar does not depend on that mod, so its contract is not typed here, and without it the
+// value stays null and no task icon is drawn.
+type PendingCount = { total: number; by: Record<string, number> } // the pending tasks at the pane's last read: in all, and by folder label
+type TodoBadge = { available: boolean; open: boolean; pending: PendingCount | null; folder: string | null }
+const todoBadge = atom({ plugin: 'todo', key: 'badge' } as never, null)
+// The task icon's hover tag: the folder chosen in the pane, by name, and its count; all folders
+// before one is chosen this session, or once it is gone (owner 31 Oct 2026); `tasks` before the
+// session's first read.
+export function iconTag(pending: PendingCount | null, folder: string | null): string {
+  if (pending === null) return 'tasks'
+  const inFolder = folder !== null && Object.hasOwn(pending.by, folder) ? pending.by[folder] : undefined // never a name like `toString`
+  return inFolder === undefined ? `tasks · ${pending.total} pending` : `tasks · ${folder} · ${inFolder} pending`
+}
+// The icon's press and `/ctxbar tasks`: that mod's own switch, `$.todo.toggle()`, untyped here (no
+// dependency); its answer is the badge after. A failure is swallowed (null) so the bar never breaks
+// on it.
+async function toggleTodo($: EngineInterface): Promise<TodoBadge | null> {
+  // @ts-expect-error: the todo mod's noun; ctxbar carries no contract for it
+  try { return await $.todo.toggle() } catch { return null /* that mod is gone or refused: nothing to do */ }
+}
 // What the ensemble mod publishes for this icon (its `badge`), read as any mod's value may be:
 // ctxbar does not depend on that mod, so its contract is not typed here, and without it the
 // value stays null and no icon is drawn.
@@ -564,7 +579,6 @@ async function pace($: EngineInterface): Promise<void> {
 }
 
 export const register: Register = (on, options) => {
-  registerTasks(on) // the task pane (hooks/tasks.tsx): one hooks module per plugin, so it is imported
   const size = pillSize(options) // the pill's width and padding, from the mod's options
   const waveS = waveSeconds(options) // the lanes' wave: seconds a crossing, from the mod's options
   on('session.start', async ($, e, next) => {
@@ -573,11 +587,6 @@ export const register: Register = (on, options) => {
       name: 'ctxbar', description: 'Show or hide the one-row context bar above the prompt; /ctxbar tasks opens or closes the task pane',
       argumentHint: '[tasks]',
     }).catch(() => undefined)
-    await $.command.register({
-      name: 'todo', description: 'Open or close the task pane; with words, run them as the todo skill does (add, remove, completed, …)',
-      argumentHint: '[add|remove|completed|uncheck|clear|path …]', immediate: true,
-    }).catch(() => undefined)
-    await tasksSessionStart($).catch(() => undefined) // the pane's state again, a reload of the mod included
     const wasHidden = (await $.store.get('hidden').catch(() => undefined)) === true
     await update($, hidden, () => wasHidden)
     // Something draws the bar: the terminal REPL, or a client already attached (the desktop
@@ -641,7 +650,6 @@ export const register: Register = (on, options) => {
       // a turn stopped or failed before a response may hold an old one's windows: not as of now
       await remeasure($, e.reason === 'answer' || e.reason === 'refusal').catch(() => undefined)
       void remeasureDiff($, true).catch(() => undefined) // a fetch or a push moves the remote's branch, not HEAD
-      void tasksTurnEnd($).catch(() => undefined)
     } else await refreshAgents($).catch(() => undefined)
     return done
   })
@@ -802,10 +810,13 @@ export const register: Register = (on, options) => {
     return compacted
   }).catch(($, e, next) => next(e)) // never in the compaction's way
 
-  on('command.run', { command: 'todo' }, async ($, e) => todoCommand($, e.args))
-
   on('command.run', { command: 'ctxbar' }, async ($, e) => {
-    if (e.args.trim() === 'tasks') return todoCommand($, '') // the pane, any width, the bar's shown/hidden left alone
+    // the todo mod's pane, any width, the bar's shown/hidden left alone; the reply as a bare /todo gives it
+    if (e.args.trim() === 'tasks') {
+      const after = await toggleTodo($)
+      if (after === null) return { text: 'No task pane: the todo mod did not answer' }
+      return { text: after.open ? 'Tasks pane open' : 'Tasks pane closed' }
+    }
     const nowHidden = await update($, hidden, was => !was)
     await $.store.set('hidden', nowHidden).catch(() => undefined)
     if (nowHidden) stopTick()
@@ -828,13 +839,16 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = ui
     const Svg = e.surface !== 'terminal' && 'Svg' in ui ? ui.Svg : undefined // a picture wherever one draws as one
     // The task icon closes both rows; everything else is drawn in the band less its cells, so no
-    // part of the row moves with the icon's look (spec A6, S2).
+    // part of the row moves with the icon's look (spec A6, S2). Drawn only while the todo mod's
+    // badge says it is here; without it the row takes those cells too.
+    const todo = (await read($, todoBadge)) as TodoBadge | null
+    const hasTodo = todo?.available === true
     const ensemble = (await read($, ensembleBadge)) as EnsembleBadge | null
     const hasEnsemble = ensemble?.available === true
-    const cols = e.props.bodyColumns - ICON_CELLS - (hasEnsemble ? ENSEMBLE_CELLS + (Svg ? ENSEMBLE_DESK_CELLS : 0) : 0)
-    const isTasksOpen = await read($, tasksOpen)
+    const cols = e.props.bodyColumns - (hasTodo ? ICON_CELLS : 0) - (hasEnsemble ? ENSEMBLE_CELLS + (Svg ? ENSEMBLE_DESK_CELLS : 0) : 0)
+    const isTasksOpen = todo?.open === true
     // Its tag is a chip as the row's other tags are (the tags' grey, a picture on the desktop).
-    const iconTagText = iconTag(await read($, tasksPending), await read($, tasksFolder))
+    const iconTagText = iconTag(todo?.pending ?? null, todo?.folder ?? null)
     const tag = (text: string, right: number) => (
       <Box position="absolute" top={0} right={right} display="none" hover={{ display: 'flex' }}>
         {Svg
@@ -853,10 +867,10 @@ export const register: Register = (on, options) => {
     )
     // Beside the Ensemble icon on the desktop the two native buttons sit a hair apart (0.8px), so their glows read
     // 1px apart (owner 30Oct26); a terminal keeps the row's gap, its narrowest step being a cell.
-    const tasksIcon = (
+    const tasksIcon = hasTodo && (
       <Box key="tasks" flexDirection="row" flexShrink={0} position="relative">
         <Text>{hasEnsemble && Svg ? ' ' : GAP}</Text>
-        <Button key="tasks:icon" plain dimColor={!isTasksOpen} label={TASK_ICON} onPress={() => void togglePane($).catch(() => undefined)} />
+        <Button key="tasks:icon" plain dimColor={!isTasksOpen} label={TASK_ICON} onPress={() => void toggleTodo($)} />
         {tag(iconTagText, ICON_CELLS)}
       </Box>
     )

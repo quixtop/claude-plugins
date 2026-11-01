@@ -2,7 +2,7 @@
 // author: shrix
 // The task pane's pure helpers: the argv that runs todo.py, the check of the JSON it prints,
 // the order the pane lists tasks in, and the same limits on a title and a folder name that
-// todo.py applies (spec docs/spec/ctxbar-task-panel.md § 4.4, 4.7, 4.8, FR4).
+// todo.py applies (spec ~/.agents/skills/ctxbar/docs/spec/ctxbar-task-panel.md § 4.4, 4.7, 4.8, FR4).
 import type { ErrorKind, FolderView, Item, TaskError, TaskState } from '../types'
 
 export type { ErrorKind, FolderView, Item, TaskError, TaskState }
@@ -20,10 +20,8 @@ export type TaskOp =
   | { op: 'folder-delete'; name: string }
   | { op: 'undo'; token: string } // the last save's undo token
 
-// The todo skill's script: in ~/.agents/skills when the skill lives there, else where Claude Code reads skills — a kit
-// install with no ~/.agents puts it in ~/.claude/skills (owner 31Oct26)
-export const todoPy = (home: string, inAgents = true): string =>
-  inAgents ? `${home}/.agents/skills/todo/scripts/todo.py` : `${home}/.claude/skills/todo/scripts/todo.py`
+// The todo skill's script: the skill lives inside this mod, at skills/todo/ (owner 1Nov26: one todo, not two).
+export const bundledTodoPy = (root: string): string => `${root}/skills/todo/scripts/todo.py`
 
 // Where the focus ring goes once a field (not a rename) saves: a new task's, onto `editKey` while a
 // task is selected, so Enter edits it (owner 30 Oct 2026); else, and for a folder field, onto the
@@ -33,15 +31,6 @@ export const ringAfterSave = (field: string, selected: boolean, editKey: string)
 
 // The pending tasks at the last read: in all, and by folder label.
 export type PendingCount = { total: number; by: Record<string, number> }
-
-// The task icon's hover tag: the folder chosen in the pane, by name, and its count; all folders
-// before one is chosen this session, or once it is gone (owner 31 Oct 2026); `tasks` before the
-// session's first read.
-export function iconTag(pending: PendingCount | null, folder: string | null): string {
-  if (pending === null) return 'tasks'
-  const inFolder = folder !== null && Object.hasOwn(pending.by, folder) ? pending.by[folder] : undefined // never a name like `toString`
-  return inFolder === undefined ? `tasks · ${pending.total} pending` : `tasks · ${folder} · ${inFolder} pending`
-}
 
 // A path as the pane shows it: the home folder as `~`.
 export const tildePath = (path: string, home: string): string =>
