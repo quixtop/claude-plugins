@@ -16,6 +16,14 @@
     {
       "name": "ensemble",
       "source": "./plugins/ensemble"
+    },
+    {
+      "name": "secret-guard",
+      "source": "./plugins/secret-guard"
+    },
+    {
+      "name": "check-on-edit",
+      "source": "./plugins/check-on-edit"
     }
   ]
 }

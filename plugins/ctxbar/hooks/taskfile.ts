@@ -94,7 +94,7 @@ function isFolder(v: unknown): v is FolderView {
 
 function asState(v: Record<string, unknown>): TaskState | null {
   const ok = v.version === JSON_VERSION && typeof v.path === 'string' &&
-    (v.state === 'list' || v.state === 'nofile' || v.state === 'migrate') && finite(v.mtimeMs) && finite(v.size) &&
+    (v.state === 'list' || v.state === 'nofile') && finite(v.mtimeMs) && finite(v.size) &&
     Array.isArray(v.folders) && v.folders.every(isFolder)
   if (!ok) return null
   const { version, path, state, mtimeMs, size, folders } = v as unknown as TaskState
@@ -102,7 +102,7 @@ function asState(v: Record<string, unknown>): TaskState | null {
   return { version, path, state, mtimeMs, size, folders, ...(typeof v.undo === 'string' && v.undo !== '' ? { undo: v.undo } : {}) }
 }
 
-const KINDS: ErrorKind[] = ['input', 'read', 'write', 'migrate', 'busy', 'conflict', 'internal']
+const KINDS: ErrorKind[] = ['input', 'read', 'write', 'busy', 'conflict', 'internal']
 
 // What todo.py printed: its state, its own error (with the state when it gave one), or the
 // pane's `process` / `version` error when the output cannot be trusted.

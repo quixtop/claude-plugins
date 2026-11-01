@@ -57,7 +57,6 @@ let landedTop: number | null = null // where the last wheel tick landed, until t
 let lastAt = 0 // the engine's window as last drawn
 let pins = 0 // numbers the list's places (tasksTop.n)
 let droppedPin = -1 // the place a drawing saw the engine's window move off
-const MIGRATE_MESSAGE = '~/md/todo.md has your tasks — run: python3 ~/.agents/skills/todo/scripts/todo.py migrate'
 
 const CLEAN = { renaming: null, folderDraft: null, folderRename: null, confirmDelete: null, adding: false, addAt: null, picking: false, touched: null, selected: null }
 const CLOSE_ADD = { adding: false, addAt: null, addDraft: '', editError: null, touched: null } // the add field closed: its text and its error go
@@ -720,7 +719,6 @@ async function drawPane($: EngineInterface, e: any) {
   const v = await read($, tasksView)
   const r = v.result
   if (r === null) return <Text mono dimColor>reading…</Text>
-  if (isError(r) && r.kind === 'migrate') return <Text mono color="yellow">{r.error || MIGRATE_MESSAGE}</Text>
   const state = stateOf(r)
   if (!state || (isError(r) && r.kind === 'read')) return <Text mono color="red">{(r as TaskError).error}</Text>
 

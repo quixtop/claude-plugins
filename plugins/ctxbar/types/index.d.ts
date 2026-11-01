@@ -82,13 +82,13 @@ export type FolderView = { name: string; label: string; pending: number; done: n
 export type TaskState = {
   version: 1
   path: string
-  state: 'list' | 'nofile' | 'migrate'
+  state: 'list' | 'nofile'
   mtimeMs: number | null
   size: number | null
   folders: FolderView[]
   undo?: string // from a save that wrote: what `todo.py --json undo --token=` takes to put it back
 }
-export type ErrorKind = 'input' | 'read' | 'write' | 'migrate' | 'busy' | 'conflict' | 'internal' | 'process' | 'version'
+export type ErrorKind = 'input' | 'read' | 'write' | 'busy' | 'conflict' | 'internal' | 'process' | 'version'
 export type TaskError = { kind: ErrorKind; error: string; state?: TaskState }
 
 // The task pane's view (spec § 4.5, A3, A12, A19): what todo.py last answered and what the

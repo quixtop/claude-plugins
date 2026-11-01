@@ -1,0 +1,12 @@
+{
+  "name": "secret-guard",
+  "version": "0.1.0",
+  "description": "Keeps secret values out of Claude Code: blocks a prompt or a file write that carries a private key or provider token, blocks shell commands that dump the environment or echo secret-named variables, and warns when tool output shows one.",
+  "author": {
+    "name": "shrix"
+  },
+  "repository": "https://github.com/quixtop/claude-plugins",
+  "keywords": [
+    "hook"
+  ]
+}

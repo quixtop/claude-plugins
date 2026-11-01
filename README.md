@@ -32,3 +32,21 @@ countdown; while work runs, a lane per task. A task icon opens a pane over your 
 ```
 
 Needs the `ensemble` CLI from the [quixtop apps page](https://www.quixtop.com/apps).
+
+## secret-guard — secret values never leave the conversation
+
+Blocks a prompt or a file write that carries a private key or a provider token, blocks shell commands that dump the
+environment or echo a secret-named variable, and warns when a tool's output shows one. Needs `jq` at `/usr/bin/jq`.
+
+```
+/plugin install secret-guard@quixtop
+```
+
+## check-on-edit — a broken skill or hook is caught as it is written
+
+Validates a skill, hook, rule or command file the moment Claude edits it and shows Claude any failure at once.
+Needs the `tune` skill, `jq` at `/usr/bin/jq` and `/usr/bin/python3`.
+
+```
+/plugin install check-on-edit@quixtop
+```

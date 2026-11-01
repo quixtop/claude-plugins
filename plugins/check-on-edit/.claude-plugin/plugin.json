@@ -1,0 +1,12 @@
+{
+  "name": "check-on-edit",
+  "version": "0.1.0",
+  "description": "Validates a skill, hook, rule or command file the moment Claude edits it (frontmatter, shell syntax, Python, JSON, JavaScript) and shows Claude any failure at once.",
+  "author": {
+    "name": "shrix"
+  },
+  "repository": "https://github.com/quixtop/claude-plugins",
+  "keywords": [
+    "hook"
+  ]
+}
