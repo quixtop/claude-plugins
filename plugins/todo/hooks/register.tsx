@@ -23,7 +23,7 @@ export const register: Register = on => {
     const started = await next(e)
     await $.command.register({
       name: 'todo', description: 'Open or close the task pane; with words, run them as the todo skill does (add, remove, completed, …)',
-      argumentHint: '[add|remove|completed|uncheck|clear|path …]', immediate: true,
+      argumentHint: '[add|remove|completed|uncheck|clear|search|path …]', immediate: true,
     }).catch(() => undefined)
     await tasksSessionStart($).catch(() => undefined) // the pane's state again, a reload of the mod included
     return started

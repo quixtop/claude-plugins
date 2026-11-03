@@ -119,6 +119,20 @@ export function parseResult(stdout: string, truncated: boolean): TaskState | Tas
 // File order is age order; the pane lists the newest first.
 export const newestFirst = (items: Item[]): Item[] => [...items].reverse()
 
+// Search (spec todo-search.md FR1): every word of the query, lower case, somewhere in the title, all
+// its lines. toLowerCase, never the locale's, to agree with todo.py's str.lower() (search_matches).
+export const queryWords = (query: string): string[] => query.toLowerCase().split(/\s+/).filter(Boolean)
+
+// What the person's Esc (or the pane's close mark) does, in order: leave an open field, question or
+// folder list; else close an open search; else undo a change of the last 10 s, or close the pane.
+export const escapeStep = (editOpen: boolean, search: string | null | undefined): 'edit' | 'search' | 'undo-or-close' =>
+  editOpen ? 'edit' : search != null ? 'search' : 'undo-or-close'
+
+export function matches(title: string, query: string): boolean {
+  const text = title.toLowerCase()
+  return queryWords(query).every(word => text.includes(word))
+}
+
 // The pre-check mirrors todo.py's (`_text_ok`, `_check_folder_text`) so the pane never sends
 // text todo.py would refuse; todo.py stays the authority. Known limit: names compare with
 // toLowerCase here and casefold there (ß), so todo.py may still refuse a rare name.

@@ -1,7 +1,7 @@
 ---
 name: todo
 author: shrix
-description: "(shrix) Personal todo list manager backed by a configurable file (default ~/md/todo.md, folders as ## headings). Use when the user runs /todo to view, add, remove, complete/un-complete items, clear done items, or set the file path. NOT for project task tracking (use proj-tasks)."
+description: "(shrix) Personal todo list manager backed by a configurable file (default ~/md/todo.md, folders as ## headings). Use when the user runs /todo to view, add, remove, complete/un-complete items, clear done items, search items, or set the file path. NOT for project task tracking (use proj-tasks)."
 metadata:
   version: "2.0"
   category: status
@@ -31,6 +31,7 @@ The contract both `/todo` and the task pane keep (ctxbar spec § 4.4):
 | `/todo completed <num>[, <num>...]` | Mark pending item(s) as done |
 | `/todo uncheck <num>[, <num>...]` | Flip done item(s) back to pending |
 | `/todo clear` | Wipe all done items |
+| `/todo search <words>` | The tasks holding every word (any case, any of a task's lines), all folders: pending first, then done struck (`~~…~~`), each as `#N` with its list number — `#N`, not `N.`, as markdown renumbers a list — so `completed N` works next; read-only |
 | `/todo path` | Show the current todo file path |
 | `/todo path <new-path>` | Set the todo file path (persistent) |
 | `/todo path reset` | Restore the default `~/md/todo.md` |
@@ -38,10 +39,10 @@ The contract both `/todo` and the task pane keep (ctxbar spec § 4.4):
 
 **Numbering:** items are **continuously numbered** — pending first (1..P), then done (P+1..P+D). All number-taking commands (`remove`, `completed`, `uncheck`) use this unified scheme. `remove N` works on any item; `completed N` errors if N is already done; `uncheck N` errors if N is still pending. Done items render with ✅ right-aligned in a straight vertical column based on the longest done-item text, so the checkmarks line up regardless of item length.
 
-**Shorthand:** any non-empty prefix of the subcommand works — `a`/`ad`/`add`, `r`/`re`/`rem`/.../`remove`, `c`/`co`/.../`completed`, `cl`/`cle`/.../`clear`, `p`/`pa`/`pat`/`path`, `u`/`un`/.../`uncheck`. **Prefix collision note:** `c` resolves to `completed` (checked first in dispatch); to reach `clear` via prefix matching, you need at least `cl`. Other canonicals have unique first letters (a/r/p/h/u). **Single-char alias `x` → `clear`:** since `clear`'s natural letter `c` collides with `completed`, the short option `-x` is dedicated to `clear`. So `! todo -x` wipes all done items. Pass whatever the user typed through to the script unchanged; the script resolves the prefix itself.
+**Shorthand:** any non-empty prefix of the subcommand works — `a`/`ad`/`add`, `r`/`re`/`rem`/.../`remove`, `c`/`co`/.../`completed`, `cl`/`cle`/.../`clear`, `p`/`pa`/`pat`/`path`, `u`/`un`/.../`uncheck`, `s`/`se`/.../`search`. **Prefix collision note:** `c` resolves to `completed` (checked first in dispatch); to reach `clear` via prefix matching, you need at least `cl`. Other canonicals have unique first letters (a/r/p/h/u/s). **Single-char alias `x` → `clear`:** since `clear`'s natural letter `c` collides with `completed`, the short option `-x` is dedicated to `clear`. So `! todo -x` wipes all done items. Pass whatever the user typed through to the script unchanged; the script resolves the prefix itself.
 
 **Flag syntax (POSIX/GNU-aligned):**
-- `-X` — single dash + **exactly one character** (POSIX short option): `-a`, `-r`, `-c`, `-p`, `-h`, `-u` (uncheck), `-x` (clear)
+- `-X` — single dash + **exactly one character** (POSIX short option): `-a`, `-r`, `-c`, `-p`, `-h`, `-u` (uncheck), `-x` (clear), `-s` (search)
 - `--XYZ` — double dash + **one or more characters** (GNU long option): `--add`, `--remove`, `--help`, etc.
 - **Rejected:** `-add`, `-rem`, or any single-dash-with-multi-char form — POSIX reads these as option clustering (`-a -d -d`), which this skill does not support. Also rejected: `---foo` (three or more dashes), bare `-`, and bare `--`.
 
@@ -53,7 +54,7 @@ The echo line always shows the canonical resolved form regardless of input style
 
 **Restore:** `~/md/todo.md.prev` is the file before the last edit; `~/md/todo.md.deleted` keeps every removed line under a timestamp.
 
-**Batching:** use `,` to separate multiple items or numbers in one command. Examples:
+**Batching:** use `,` to separate multiple items or numbers in one command (not in `search`, where a comma is plain text). Examples:
 - `/todo add Buy milk, Call mom, Write skill`
 - `/todo remove 2, 4`
 - `/todo completed 1, 3`
@@ -129,6 +130,14 @@ Mutation commands echo the resolved full-form invocation on a `›` line above t
 Empty state (no echo for bare list):
 ```
 **ToDo** (0 items) — empty
+```
+
+Search (each line but the last ends in two spaces, a markdown line break; words are typed without quotes):
+```
+› search milk
+**ToDo** search "milk" (2 matches, 1 done)
+#1 Buy milk · Home
+#4 ~~Return milk~~ · Home
 ```
 
 Errors (no echo — the ❌ line is the whole response; exit 1):

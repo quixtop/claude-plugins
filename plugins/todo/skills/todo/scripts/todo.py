@@ -14,6 +14,7 @@ Usage:
   todo.py completed <num>[, <num>...]  # mark pending items as done
   todo.py uncheck <num>[, <num>...]    # flip done items back to pending
   todo.py clear                        # wipe all done items
+  todo.py search <words>               # tasks holding every word, numbered as listed
   todo.py path                         # show current path
   todo.py path <new>                   # set path (persistent)
   todo.py path reset                   # restore default
@@ -27,7 +28,7 @@ N refers to an already-done item; `uncheck N` errors if N is still pending.
 Any non-empty prefix of a subcommand works. Collision note: `c` resolves
 to `completed` (checked first); `cl` or longer
 is required to reach `clear` via prefix matching. Other canonicals have
-unique first letters (a/r/p/h/u). Single-char alias: `x` → `clear`
+unique first letters (a/r/p/h/u/s). Single-char alias: `x` → `clear`
 (so `-x` is the short option for clear, since `clear`'s own letter `c`
 collides with `completed`).
 
@@ -441,6 +442,47 @@ def render(lines):
     return "\n".join(out)
 
 
+def query_words(query):
+    """The search words, lower case — str.lower(), never casefold(), to agree with the pane's
+    toLowerCase() (ctxbar docs/spec/todo-search.md FR1)."""
+    return query.lower().split()
+
+
+def search_matches(title, words):
+    """True when every word is in the title, any of its lines, case-blind."""
+    text = title.lower()
+    return all(word in text for word in words)
+
+
+def cmd_search(args):
+    """Print the tasks holding every word, numbered as the list numbers them, pending first and
+    then done struck (FR3). `#N`, never `N.`: markdown renumbers an ordered list. Each line but
+    the last ends in a hard break (two spaces) so no renderer joins them. Reads only."""
+    query = " ".join(args).strip()
+    if len(query) >= 2 and query[0] == query[-1] == '"':     # the mod passes quotes on as typed
+        query = query[1:-1].strip()
+    words = query_words(query)
+    if not words:
+        usage()
+    folders = parse(read_lines())
+    headed = has_headings(folders)
+    numbered = [(f, done, text) for want in (False, True) for f in folders for _, done, text in f.items if done == want]
+    hits = [(n, f, done, text) for n, (f, done, text) in enumerate(numbered, 1) if search_matches(text, words)]
+    out = [f"› search {query}"]
+    if not hits:
+        out.append(f'**ToDo** search "{query}" — no matches')
+    else:
+        out.append(f'**ToDo** search "{query}" ({len(hits)} matches, {sum(1 for h in hits if h[2])} done)')
+        for n, f, done, text in hits:
+            first, *rest = text.split("\n")
+            # A tilde inside a struck line is escaped: `~~~` would open a code fence, an inner `~~` end the strike.
+            strike = (lambda s: "~~" + s.strip().replace("~", "\\~") + "~~") if done else (lambda s: s)
+            mark = f"#{n} "
+            out.append(mark + strike(first) + (f" · {f.label}" if headed else ""))
+            out.extend(" " * len(mark) + strike(line) for line in rest)
+    print("  \n".join(out))
+
+
 def named(lines, nums, display_order):
     """` (title, title)` after an echo when the file has folders (spec A9)."""
     if not has_headings(parse(lines)):
@@ -674,6 +716,7 @@ Commands:
   /todo completed <num>[, <num>...]     mark pending item(s) done
   /todo uncheck <num>[, <num>...]       flip done item(s) back to pending
   /todo clear                           wipe all done items
+  /todo search <words>                  find tasks (pending, then done struck)
   /todo path                            show current file path
   /todo path <new-path>                 set file path (persistent)
   /todo path reset                      restore default (~/md/todo.md)
@@ -692,9 +735,10 @@ Shorthand: any non-empty prefix works —
   p / pa / pat / path
   u / un / unc / ... / uncheck
   h / he / hel / help
+  s / se / sea / ... / search
 
 Flag syntax (POSIX/GNU-aligned):
-  -X     single dash + one char       e.g. -a, -r, -c, -p, -h, -u, -x
+  -X     single dash + one char       e.g. -a, -r, -c, -p, -h, -u, -x, -s
   --XYZ  double dash + multi-char     e.g. --add, --remove, --clear
 Multi-char forms with a single dash (e.g. `-add`, `-rem`) are rejected
 because POSIX reads them as option clustering. Special: `-x` is the
@@ -787,8 +831,8 @@ def main(argv):
     if not sub:  # catches None (malformed dash form) and empty string
         usage()
     rest = argv[2:]
-    # Shorthand: any non-empty prefix of add/remove/completed/clear/path/uncheck/help.
-    # Seven canonicals, six unique first letters: a/r/c/p/u/h (c is shared —
+    # Shorthand: any non-empty prefix of add/remove/completed/clear/path/uncheck/help/search.
+    # Eight canonicals, seven unique first letters: a/r/c/p/u/h/s (c is shared —
     # completed is checked before clear so `c` → completed;
     # `cl`+ reaches clear via prefix matching, and `-x` reaches it via alias).
     if "add".startswith(sub):
@@ -815,6 +859,8 @@ def main(argv):
         cmd_uncheck(rest)
     elif "help".startswith(sub):
         cmd_help()
+    elif "search".startswith(sub):
+        cmd_search(rest)
     else:
         usage()
 

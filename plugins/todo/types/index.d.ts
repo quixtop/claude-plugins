@@ -36,6 +36,7 @@ export type TasksView = {
   addAt: { id: string; where: 'below' | 'above' } | null // o / b: the add field opens under or over this task (its `folder\0title\0nth`), not at the top
   picking: boolean // the folder list is open under the title: it or its ▼ opens and closes it, a pick closes it
   touched: string | null // the key of the open field typed in since it opened: only then does its ✓ show
+  search: string | null // the search bar across the title row: null closed, else its text (spec todo-search.md FR2)
   selected: string | null // the task j / k landed on (`folder\0title\0nth`): highlighted, its icons shown; t r i a dd o b and Enter act on it
   addDraft: string // the add field's text, put back after a failed add
   adds: number // successful adds: the add field's key, so a new, empty field follows each one

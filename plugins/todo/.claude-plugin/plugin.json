@@ -1,6 +1,6 @@
 {
   "name": "todo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A docked task pane over the /todo list (folders, add, tick, rename, reorder, delete); /todo opens or closes it, /todo <words> runs them as the todo skill does. Other mods open or close it with $.todo.toggle() and read its badge (ctxbar's task icon).",
   "author": { "name": "shrix" },
   "keywords": ["mod"],
