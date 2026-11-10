@@ -10,12 +10,12 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { TasksView, TodoBadge } from '../types'
 import {
-  type FolderView, type Item, type PendingCount, type TaskError, type TaskOp, type TaskState, argvEdit, argvRead, assignColours, bundledTodoPy, checkFolder,
-  checkTitle, colourKey, escapeStep, isError, matches, newestFirst, parseResult, queryWords, ringAfterSave, tildePath,
+  type FolderView, type Item, type PendingCount, type TaskError, type TaskOp, type TaskState, argvEdit, argvRead, bundledTodoPy,
+  checkTitle, escapeStep, fieldRows, isError, matches, newestFirst, nextHue, parseResult, queryWords, shownTitle, tildePath, validHue,
 } from './taskfile'
 
-// The folders' colours: the ctxbar mod's lane palette (its work.ts HUES), copied as the one value the pane needs.
-const HUES = ['#4F8FEA', '#D29A2E', '#2BB3A3', '#E06C9F', '#6DBE45', '#E8834A', '#3CB8E0']
+// The projects' colours (owner 6 Nov 2026): the Accent colors of REFS/palette.html. Light, so navy reads on them.
+const HUES = ['#FFC799', '#99FFE4', '#FF5EB3', '#00D4FF', '#FF6B6B']
 
 const PANE = 'todo-tasks'
 const TITLE = 'Tasks'
@@ -23,8 +23,7 @@ const RUN_TIMEOUT_MS = 5_000 // spec 4.7: a todo.py run that takes longer is a `
 const CHECK_MS = 60_000 // spec A15: the open pane's own look at the file
 const PAGE = 200 // spec A14: rows shown before "show more"
 const BLANK = ' ' // a cell of a press laid over words: a no-break space is never trimmed away
-const PRESS_CELLS = 120 // a press over words never needs more: the tree's text budget stays for the words
-const SELECTED_INK = '#000000' // the selected folder's name, on its colour
+const SELECTED_INK = '#000000' // the title's word, on the project's colour
 const EDIT = '✏︎' // ✏ a plain pencil, tip at the lower left (owner 30 Oct 2026); its text form, never the emoji
 // ◀, pointing at the chat beside the pane: puts the task into the prompt box (owner 31 Oct 2026); its text form.
 const SEND = '◀︎'
@@ -33,28 +32,25 @@ const SEND = '◀︎'
 const SEARCH = '⌕' // a line lens, text-only (owner 2 Nov 2026: 🔍︎ drew a filled lens on the desktop)
 const SEARCH_KEY = 's'
 const SEARCH_RING = 'search' // the icon's press: where the ring rests once the bar closes
-// A sent task's ground: its folder's colour at this opacity, the lightest shade (owner 31 Oct 2026).
-const SENT_ALPHA = '24'
-// A sent task's tint goes after this many more prompts, if it is not ticked first (owner 31 Oct 2026).
-const SENT_PROMPTS = 2
 const RULE_INK = '#4A4A4A' // the line between tasks: dim grey
 const RULE_CELLS = 400 // blank cells the line is underlined across, cut at the pane's edge
 const SELECTED_ROW = '#2C2C2C' // the task j / k landed on: a ground one step lighter than the pane's
-const LIST_GROUND = '#363636' // the folder list laid over the tasks: a step lighter again, apart from a selected task
-// The tasks' stripes, each list from its first (owner 1 Nov 2026, the middle two of the gold-navyblue palette): navy
-// with gold text, then gold with navy text.
+// The tasks' stripes, each list from its first: navy (owner 1 Nov 2026) with the title in the project's colour, then the
+// project's colour with the title in navy (owner 4 Nov 2026: the colour of the title bar, in place of gold).
 const NAVY = '#14213D'
-const GOLD = '#FCA311'
-const SELECTED_PLAIN = '#E6E6E6' // the selected row's ground when it has no colour (the top folder)
+// The selected task's ground (owner 4 Nov 2026): a lighter navy than either stripe, so it never matches the row beside
+// it, the title in the project's colour.
+const SELECTED_STRIPE = '#3A5A8C'
+const TITLE_LINES = 6 // a task's title shows whole up to this many lines, then cut with an ellipsis (shownTitle)
+const NO_COLOUR = '#E6E6E6' // the title bar and stripe in the moment before a project has its colour
 const MTIME_SLACK_MS = 1 // todo.py's mtime (ns / 1e6) and the engine's differ in the last digits
 const TOP = '(no folder)' // todo.py's label for the lines above the first heading
-const FIRST_FOLDER = 'gen' // where a first task goes (todo.py starts this folder)
 const LOG = 'todo: '
 
-// The folder row stays on top (owner 30 Oct 2026). A docked pane on a graphical surface draws its
+// The title row stays on top (owner 30 Oct 2026). A docked pane on a graphical surface draws its
 // own window: the tree is the pane's room tall plus a row of scroll per list entry (a task, a field,
 // a "show more", the Completed toggle) past the first. The engine scrolls it as ever (the wheel,
-// its scroll bar and keys); each drawing puts the window — the folder row, the list from that many
+// its scroll bar and keys); each drawing puts the window — the title row, the list from that many
 // entries down, the footer — where the engine's window stands. A tick moves a whole task: the pane
 // cannot measure a task's height on screen, so the list never moves by lines.
 const PAGE_ENTRIES = 5 // a page key moves the list this many entries, not a window's worth of rows
@@ -70,24 +66,20 @@ let lastAt = 0 // the engine's window as last drawn
 let pins = 0 // numbers the list's places (tasksTop.n)
 let droppedPin = -1 // the place a drawing saw the engine's window move off
 
-const CLEAN = { renaming: null, folderDraft: null, folderRename: null, confirmDelete: null, adding: false, addAt: null, picking: false, touched: null, selected: null, search: null }
-const CLOSE_ADD = { adding: false, addAt: null, addDraft: '', editError: null, touched: null } // the add field closed: its text and its error go
+const CLEAN = { renaming: null, adding: false, addAt: null, shape: null, selected: null, search: null }
+const CLOSE_ADD = { adding: false, addAt: null, addDraft: '', editError: null, shape: null } // the add field closed: its text and its error go
 const EMPTY_VIEW: TasksView = {
   result: null, editError: null, pinned: [], inFlight: [], showCompleted: false, shown: PAGE, shownDone: PAGE,
   ...CLEAN, addDraft: '', adds: 0, readAt: 0,
 }
 
 const tasksOpen = atom({ plugin: 'todo', key: 'tasksOpen' } as const, false)
-const tasksPending = atom({ plugin: 'todo', key: 'tasksPending' } as const, null as PendingCount | null, { shape: 'tasks-pending-2' })
-const tasksFolder = atom({ plugin: 'todo', key: 'tasksFolder' } as const, null as string | null)
-const tasksView = atom({ plugin: 'todo', key: 'tasksView' } as const, EMPTY_VIEW, { shape: 'tasks-view-12' })
-const tasksColours = atom({ plugin: 'todo', key: 'tasksColours' } as const, {} as Record<string, number>)
+const tasksPending = atom({ plugin: 'todo', key: 'tasksPending' } as const, null as PendingCount | null, { shape: 'tasks-pending-3' })
+const tasksView = atom({ plugin: 'todo', key: 'tasksView' } as const, EMPTY_VIEW, { shape: 'tasks-view-13' })
+const tasksColours = atom({ plugin: 'todo', key: 'tasksColours' } as const, {} as Record<string, number>, { shape: 'tasks-colours-3' })
 // What the focus ring holds: written on every move, read only when a key is pressed, never
 // while drawing, so moving the focus redraws nothing (A12, A14).
 const tasksFocus = atom({ plugin: 'todo', key: 'tasksFocus' } as const, null as string | null)
-// The tasks sent this session, by identity (pinId), each with the prompts its tint has left; one
-// done or gone drops out.
-const tasksSent = atom({ plugin: 'todo', key: 'tasksSent' } as const, {} as Record<string, number>, { shape: 'tasks-sent-2' })
 // Where the pane draws the list from when it moved the list itself (j / k, the person's wheel tick
 // or scroll key landed by the `ui.scroll` hook): its first entry, and the engine's window it was set
 // against; it holds only while the engine's window still stands there, so a move the hook never
@@ -95,19 +87,16 @@ const tasksSent = atom({ plugin: 'todo', key: 'tasksSent' } as const, {} as Reco
 // to the pane's hook (owner 31 Oct 2026, seen on the desktop), so j / k can't land the engine's
 // window where they want; a write here redraws the pane even when the engine's window stays put.
 const tasksTop = atom({ plugin: 'todo', key: 'tasksTop' } as const, null as { top: number; at: number; n: number } | null, { shape: 'tasks-top-2' })
-// What another mod's icon reads (ctxbar's task icon), as any mod's value may be read: the pane up or not, the pending
-// count and the folder chosen. Written whenever one of them changes, never derived by the reader. NO_BADGE until the
-// session start writes it, and the noun's answer when no hook of this mod serves it.
-export const NO_BADGE: TodoBadge = { available: false, open: false, pending: null, folder: null }
+// What another mod's icon reads (ctxbar's task icon), as any mod's value may be read: the pane up or not, and the
+// pending count. Written whenever one of them changes, never derived by the reader. NO_BADGE until the session start
+// writes it, and the noun's answer when no hook of this mod serves it.
+export const NO_BADGE: TodoBadge = { available: false, open: false, pending: null }
 const badge = atom({ plugin: 'todo', key: 'badge' } as const, NO_BADGE)
 let badging: Promise<void> = Promise.resolve()
 // The badge as this module last wrote it: the change is merged into it and compared with it, never with a read back in
 // the same dispatch (a dispatch's reads may not see its own writes). Null after a reload: the session start writes anew.
 let written: TodoBadge | null = null
-const sameCounts = (a: TodoBadge['pending'], b: TodoBadge['pending']) =>
-  a === b || (a !== null && b !== null && a.total === b.total && Object.keys(a.by).length === Object.keys(b.by).length &&
-    Object.keys(a.by).every(k => Object.hasOwn(b.by, k) && a.by[k] === b.by[k]))
-const sameBadge = (a: TodoBadge, b: TodoBadge) => a.available === b.available && a.open === b.open && a.folder === b.folder && sameCounts(a.pending, b.pending)
+const sameBadge = (a: TodoBadge, b: TodoBadge) => a.available === b.available && a.open === b.open && a.pending?.total === b.pending?.total
 // One write at a time, the change carried in, and only when the badge changed: every write redraws its readers
 // (mod-design rule 22). Never throws: a failed write leaves the icon as it was until the next change.
 function syncBadge($: EngineInterface, change: Partial<TodoBadge>): Promise<void> {
@@ -119,8 +108,8 @@ function syncBadge($: EngineInterface, change: Partial<TodoBadge>): Promise<void
   })
   return badging.catch(() => $.ui.log(`${LOG}badge not written`, { to: 'debug' }))
 }
-// The tasks loaded into the prompt box (◀ or l) since the last send; the person's next send tints
-// those whose title it holds (owner 31 Oct 2026).
+// The tasks loaded into the prompt box (◀ or l) since the last send; the person's next send ticks
+// those whose title it holds (owner 6 Nov 2026).
 let loaded: { id: string; title: string }[] = []
 
 let check: { cancel(): void } | undefined
@@ -146,12 +135,12 @@ function undo($: EngineInterface): boolean {
 }
 let painting: Promise<void> = Promise.resolve() // colour updates, one at a time
 const typed = new Map<string, string>() // what each open field holds as typed, for its ✓ (no redraw per key)
-const idle = new Map<string, { cancel(): void }>() // each open field's 10 s idle save, restarted by typing
-type Save = (t: string) => boolean | void // false: refused (a bad title), the field stays open
-const saves = new Map<string, Save>() // each field's save as the latest drawing made it
-const IDLE_SAVE_MS = 10_000 // owner 30 Oct 2026: a field left 10 s after typing saves as Enter would
+// Each field's shape (`<key>:<rows>:<filled>`) as last drawn or asked for: typing redraws only when it changes, judged
+// against this rather than a drawing's own view, which a second key can beat to the next drawing.
+const shapes = new Map<string, string>()
+type Save = (t: string) => void // a refused title leaves the field open
 const SEARCH_IDLE_MS = 10_000 // owner 2 Nov 2026: a search bar left with no words closes after 10 s
-// Its timer, apart from the fields' (`idle`), so a field forgetting its typing leaves it running; the pane's close stops it.
+// Its own timer, so a field forgetting its typing leaves it running; the pane's close stops it.
 let searchIdle: { cancel(): void } | undefined
 
 const ROW_KEY = /^[txudeps]:/ // a task row's controls: tick, delete, up, down, edit, put back, send
@@ -162,34 +151,33 @@ const EDIT_KEY = 'k:enter'
 // Each icon's colour (owner 30 Oct 2026: ✕ red everywhere, the others each their own), as theme
 // keys. Looked up by the exact glyph: EDIT carries its text-form selector (U+FE0E).
 // The search lens is dim grey, drawn as the others are, a size step up (owner 2 Nov 2026: as a Button it was tiny).
-const ICON_INK: Record<string, string> = { '✕': 'error', [EDIT]: 'warning', '↩': 'success', '✓': 'success', '↑': 'suggestion', '↓': 'suggestion', [SEND]: 'claude', [SEARCH]: 'inactive' }
-// Each colour's bright version, an icon's under the pointer (owner 30 Oct 2026: it lights up, no ground).
+// A plain `x` closes a field unsaved, the task left as it was (owner 6 Nov 2026), dim grey and a size smaller.
+const LEAVE = 'x'
+const ICON_INK: Record<string, string> = { '✕': 'error', [EDIT]: 'warning', '↩': 'success', '✓': 'success', '↑': 'suggestion', '↓': 'suggestion', [SEND]: 'claude', [SEARCH]: 'inactive', [LEAVE]: 'inactive' }
+// Each colour's bright version: an icon under the pointer, and a task row's icons, which show only while
+// their row is hovered, from the start (owner 30 Oct 2026: it lights up, no ground; 8 Nov 2026: the row's too).
 const ICON_BRIGHT: Record<string, string> = { error: '#FF6B6B', warning: '#FFC94D', success: '#5BE38B', suggestion: '#7DBBFF', claude: '#F4A27E', inactive: '#D0D0D0' }
-const LEAVE_SAVE_MS = 400 // focus gone to nowhere saves after this, so an Esc arriving with it can cancel
+const LEAVE_SAVE_MS = 400 // the ring gone to nowhere is looked at again after this, as a closing field also leaves it there
 
-// Saves what was typed in an open field, as Enter would (an idle 10 s, or focus leaving it): once,
-// through the latest drawing's save, never an emptied field.
-function saveTyped(key: string) {
-  const t = typed.get(key)
-  const save = saves.get(key)
-  idle.get(key)?.cancel()
-  idle.delete(key)
-  typed.delete(key)
-  if (t !== undefined && t.trim() !== '' && save) save(t)
-}
-
-// One field's typing dropped, unsaved, with no save left to fire.
+// One field's typing dropped, unsaved.
 function dropTyped(key: string) {
-  idle.get(key)?.cancel()
-  idle.delete(key)
   typed.delete(key)
 }
 
-// A field closed without saving: what was typed goes, and no idle save is left to fire.
+// Every field's typing dropped: a field closed, or the pane, saves nothing (owner 8 Nov 2026: only
+// a field's ✓, its x or Enter decide).
 function forgetTyping() {
   typed.clear()
-  for (const timer of idle.values()) timer.cancel()
-  idle.clear()
+}
+
+// Whether an open field holds typed text. Any other action would close it and lose the text, so it is
+// refused with a toast, and the field kept as it is (owner 8 Nov 2026: only its ✓, its x or Enter decide).
+async function fieldHolds($: EngineInterface): Promise<boolean> {
+  if (typed.size === 0) return false
+  const now = await read($, tasksView)
+  const holds = [...typed.entries()].some(([key, t]) => t.trim() !== '' && fieldOpen(now, key)) // an emptied field holds nothing
+  if (holds) await $.ui.toast('Finish the open field first: ✓ or x')
+  return holds
 }
 
 function view($: EngineInterface, fn: (v: TasksView) => TasksView) {
@@ -220,9 +208,16 @@ async function py($: EngineInterface) {
   return bundledTodoPy(`${await homeOf($)}/.claude/skills/todo`)
 }
 
+// todo.py finds the task file from its working folder: the session's root, which a shell `cd` does not move, so the
+// list stays this project's all session. No root to ask: where the engine puts it.
+async function runInit($: EngineInterface) {
+  const cwd = await $.session.root().catch(() => undefined)
+  return { timeoutMs: RUN_TIMEOUT_MS, ...(cwd ? { cwd } : {}) }
+}
+
 async function runTodo($: EngineInterface, argv: string[]): Promise<TaskState | TaskError> {
   try {
-    const done = await $.process.run(argv, { timeoutMs: RUN_TIMEOUT_MS })
+    const done = await $.process.run(argv, await runInit($))
     const r = parseResult(done.stdout, done.isStdoutTruncated)
     if (done.exitCode !== 0 && !isError(r)) return { kind: 'process', error: `Couldn't run /todo: exit ${done.exitCode}` }
     return r
@@ -231,63 +226,53 @@ async function runTodo($: EngineInterface, argv: string[]): Promise<TaskState | 
   }
 }
 
-// Called before the view takes `r`, so a new or renamed folder is drawn in its colour from its first
-// frame: the icon's pending count, then the folders' colours. Never throws — a failed colour step
-// is logged and the edit it follows still stands.
-async function remember($: EngineInterface, r: TaskState | TaskError, rename?: { from: string; to: string }) {
+// Called before the view takes `r`, so a project is drawn in its colour from its first frame: the
+// icon's pending count, then the project's colour. Never throws — a failed colour step is logged and
+// the edit it follows still stands.
+async function remember($: EngineInterface, r: TaskState | TaskError) {
   const state = isError(r) ? r.state : r
   if (!state) return
   try {
-    const counts = {
-      total: state.folders.reduce((n, f) => n + f.pending, 0),
-      by: Object.fromEntries(state.folders.map(f => [f.label, f.pending])),
-    }
+    const counts = { total: state.folders.reduce((n, f) => n + f.pending, 0) }
     await update($, tasksPending, () => counts)
     await syncBadge($, { pending: counts })
-    await paint($, state, rename)
+    await paint($, state.path)
   } catch {
     $.ui.log(`${LOG}colours failed`, { to: 'debug' })
   }
 }
 
-const sameColours = (a: Record<string, number>, b: Record<string, number>) =>
-  Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(k => a[k] === b[k])
-
-async function storedColours($: EngineInterface): Promise<Record<string, number>> {
-  const stored = await $.store.get('taskColours').catch(() => {
+// The stored colours; null when the store cannot answer, so no write can replace what it holds.
+async function storedColours($: EngineInterface): Promise<Record<string, number> | null> {
+  try {
+    const stored = await $.store.get('projectColours')
+    return typeof stored === 'object' && stored !== null && !Array.isArray(stored) ? stored as Record<string, number> : {}
+  } catch {
     $.ui.log(`${LOG}colours not read`, { to: 'debug' })
-    return undefined
-  })
-  return typeof stored === 'object' && stored !== null && !Array.isArray(stored) ? stored as Record<string, number> : {}
+    return null
+  }
 }
 
-// Gives each folder its colour, kept in $.store across sessions; a folder made anywhere (the pane,
-// /todo, an editor) gets one the first time the pane reads it. A read with no folders (no file
-// yet, an editor mid-save) changes nothing, so the colours survive it. The session's map (seeded
-// from the store on open) is the source; the store is written behind it, one write at a time.
-async function paint($: EngineInterface, state: TaskState, rename?: { from: string; to: string }) {
-  const names = state.folders.filter(f => f.label !== TOP).map(f => f.name)
-  if (names.length === 0) return
-  const now = await read($, tasksColours)
-  const next = assignColours(Object.keys(now).length > 0 ? now : await storedColours($), names, HUES.length, rename)
-  if (sameColours(next, now)) return
-  await update($, tasksColours, () => next)
-  painting = painting.then(() => $.store.set('taskColours', next)).catch(() => $.ui.log(`${LOG}colours not saved`, { to: 'debug' }))
-}
-
-// The stored colours, before the first read draws: a reload of the mod starts its atoms empty.
-async function seedColours($: EngineInterface) {
+// Gives the project (its task file's path) a colour the first time the pane reads it, kept in
+// $.store across sessions and shared by them: the store is read here, so a colour another session
+// took counts. The session's map says it is done; the store is written behind it, one write at a time.
+async function paint($: EngineInterface, path: string) {
+  if (Object.hasOwn(await read($, tasksColours), path)) return
   const stored = await storedColours($)
-  if (Object.keys(stored).length > 0) await update($, tasksColours, () => assignColours(stored, Object.keys(stored), HUES.length))
+  const kept = stored?.[path]
+  const hue = validHue(kept, HUES.length) ? kept : nextHue(Object.values(stored ?? {}), HUES.length, Math.random())
+  const next = { ...stored, [path]: hue }
+  await update($, tasksColours, () => next)
+  if (stored === null) return
+  painting = painting.then(() => $.store.set('projectColours', next)).catch(() => $.ui.log(`${LOG}colours not saved`, { to: 'debug' }))
 }
 
-// Fields that point at a row or folder no longer there are dropped, so a stale field or
-// rename never outlives its target; the rest (an open rename) survives a re-read.
-function stillThere(v: TasksView, state: TaskState | null): Pick<TasksView, 'renaming' | 'selected' | 'pinned' | 'addAt' | 'folderRename' | 'confirmDelete'> {
+// Fields that point at a row no longer there are dropped, so a stale field or rename never
+// outlives its target; the rest (an open rename) survives a re-read.
+function stillThere(v: TasksView, state: TaskState | null): Pick<TasksView, 'renaming' | 'selected' | 'pinned' | 'addAt'> {
   const keys = new Set(state?.folders.flatMap(f => f.items.map(i => i.key)) ?? [])
   const done = new Map(state?.folders.flatMap(f => f.items.map(i => [pinId(f.label, i.title, i.nth), i.done] as const)) ?? []) // a task's identity, and its state
   const ids = new Set(done.keys()) // the selection's identity
-  const labels = new Set(state?.folders.map(f => f.label) ?? [])
   return {
     renaming: v.renaming && keys.has(v.renaming.key) ? v.renaming : null,
     selected: v.selected && ids.has(v.selected) ? v.selected : null,
@@ -295,8 +280,6 @@ function stillThere(v: TasksView, state: TaskState | null): Pick<TasksView, 'ren
     // changed state again (an undo, another writer), which lets it go to where it now belongs.
     pinned: v.pinned.filter(p => done.get(p.id) === p.done),
     addAt: v.addAt && ids.has(v.addAt.id) ? v.addAt : null, // its task gone: the field adds at the top
-    folderRename: v.folderRename && labels.has(v.folderRename.label) ? v.folderRename : null,
-    confirmDelete: v.confirmDelete && labels.has(v.confirmDelete) ? v.confirmDelete : null,
   }
 }
 
@@ -311,20 +294,7 @@ async function reload($: EngineInterface): Promise<void> {
   await remember($, r)
   if (mine !== seq || queued > 0) return // an edit started meanwhile: its answer is newer
   await view($, v => ({ ...v, ...stillThere(v, stateOf(r)), result: r, readAt: Date.now() }))
-  if (mine === seq && queued === 0) await pruneSent($, stateOf(r)).catch(() => undefined)
   $.ui.log(`${LOG}read ${Date.now() - started} ms`, { to: 'debug' }) // FR8: no title, ever
-}
-
-// A sent task's tint goes once it is done, renamed or gone (or its prompts run out, at a send).
-// Written only when one drops (a write redraws the pane); a read with no folders (a file mid-save)
-// drops none; no tint, no look at the list.
-async function pruneSent($: EngineInterface, state: TaskState | null) {
-  if (!state || state.folders.length === 0) return
-  const sent = Object.keys(await read($, tasksSent))
-  if (sent.length === 0) return
-  const live = new Set(state.folders.flatMap(f => f.items.filter(i => !i.done).map(i => pinId(f.label, i.title, i.nth))))
-  if (sent.every(id => live.has(id))) return
-  await update($, tasksSent, s => Object.fromEntries(Object.entries(s).filter(([id]) => live.has(id))))
 }
 
 // A row's lock key: its folder and title, which stay put while other edits shift the lines (a
@@ -357,12 +327,10 @@ async function park($: EngineInterface, from: string | undefined) {
   if (key !== undefined) await $.ui.focus({ requestId: PANE, key: EDIT_KEY }).catch(() => undefined)
 }
 
-// One edit at a time, in the order pressed (A19). `key` names the row or folder: from the press,
-// a second edit of it is refused and the row is drawn dim, taking no press. Resolves true only
-// when the edit ran and succeeded.
-// `recolour` (folder names, not labels) carries a folder's colour across a folder rename; `from`,
-// the key of the task field that saved.
-function edit($: EngineInterface, op: TaskOp, key: string, pin?: { folder: string; title: string; nth: number }, recolour?: { from: string; to: string }, from?: string): Promise<boolean> {
+// One edit at a time, in the order pressed (A19). `key` names the row: from the press, a second
+// edit of it is refused and the row is drawn dim, taking no press. Resolves true only when the edit
+// ran and succeeded. `from`: the key of the task field that saved.
+function edit($: EngineInterface, op: TaskOp, key: string, pin?: { folder: string; title: string; nth: number }, from?: string): Promise<boolean> {
   if (pending.has(key)) return Promise.resolve(false)
   pending.add(key)
   queued++
@@ -374,7 +342,7 @@ function edit($: EngineInterface, op: TaskOp, key: string, pin?: { folder: strin
   const run = queue.then(async () => {
     const r = await py($).then(p => runTodo($, argvEdit(p, op)), (e): TaskError => ({ kind: 'process', error: `Couldn't run /todo: ${e instanceof Error ? e.message : String(e)}` }))
     const failed = isError(r)
-    await remember($, r, failed ? undefined : recolour)
+    await remember($, r)
     const pid = pin ? pinId(pin.folder, pin.title, pin.nth) : null
     let held = false // the edit holds its row (a tick or untick of a row not already held)
     await view($, v => {
@@ -382,9 +350,9 @@ function edit($: EngineInterface, op: TaskOp, key: string, pin?: { folder: strin
       if (!failed) {
         const state = r as TaskState
         const added = op.op === 'add' || op.op === 'insert' ? { addDraft: '', adds: v.adds + 1, adding: false, addAt: null } : {} // saved: the field closes; + opens a fresh one
-        // A field saved with the ring still on it (Enter, ✓, the 10 s wait) selects its task — a
-        // new one too, as vi's o leaves the cursor on the new line; one saved by a click elsewhere
-        // leaves the selection as that click left it.
+        // A field saved with the ring still on it (Enter, ✓) selects its task — a new one too, as vi's o
+        // leaves the cursor on the new line; one whose save finishes after a click elsewhere leaves the
+        // selection as that click left it.
         // A new task is not selected (owner 30 Oct 2026): selecting it and moving the ring onto its
         // ✏ left the desktop pane blank.
         const made = !ringFree(from) || op.op !== 'rename' ? null : renamedTo(stateOf(v.result), state, op)
@@ -398,14 +366,13 @@ function edit($: EngineInterface, op: TaskOp, key: string, pin?: { folder: strin
         return { ...next, ...kept, result: r, editError: null, inFlight, pinned, readAt: Date.now(), ...added }
       }
       const e = r as TaskError
-      const what = op.op === 'rename' || op.op === 'insert' || op.op === 'folder-rename' ? `'${op.to}'` : 'title' in op ? `'${op.title}'` : 'name' in op ? `'${op.name}'` : ''
+      const what = op.op === 'rename' || op.op === 'insert' ? `'${op.to}'` : 'title' in op ? `'${op.title}'` : ''
       const message = e.kind === 'write' ? `Couldn't save ${what}: ${e.error.replace(/^Couldn't save: /, '')}` : e.error
       const state = e.state ?? stateOf(v.result)
       return { ...v, ...stillThere(v, state), result: e.state ?? v.result, editError: message, inFlight,
         ...(op.op === 'add' && v.adding ? { addDraft: op.title } : op.op === 'insert' && v.adding ? { addDraft: op.to } : {}) }
     })
     ok = !failed
-    if (!failed) await pruneSent($, r as TaskState).catch(() => undefined)
     // A ticked (or unticked) row is held, struck, where it was for 10 s, then goes to its section.
     if (!failed && pid !== null) {
       pinTimers.get(pid)?.cancel()
@@ -433,6 +400,20 @@ function edit($: EngineInterface, op: TaskOp, key: string, pin?: { folder: strin
     if (stale && queued === 0) void reload($).catch(() => undefined)
   })
   return run.then(() => ok, () => false)
+}
+
+// The tasks a sent prompt held go done at once (owner 6 Nov 2026), as a tick does: held, struck, for
+// 10 s. One after the other, as copies of a title share a lock. A task ticked, renamed or gone since
+// it was loaded is left alone, and so is one not on the list as last read.
+async function tickSent($: EngineInterface, sent: { id: string }[]) {
+  for (const { id } of sent) {
+    const folders = stateOf((await read($, tasksView)).result)?.folders ?? []
+    const folder = folders.find(f => f.items.some(i => !i.done && pinId(f.label, i.title, i.nth) === id))
+    const item = folder?.items.find(i => !i.done && pinId(folder.label, i.title, i.nth) === id)
+    if (!folder || !item) continue
+    const at = { folder: folder.label, nth: item.nth, title: item.title }
+    await edit($, { op: 'tick', ...at }, rowKey(at.folder, at.title), at)
+  }
 }
 
 function startCheck($: EngineInterface) {
@@ -463,7 +444,7 @@ export async function todoCommand($: EngineInterface, args: string): Promise<{ t
     return { text: (await read($, tasksOpen)) ? 'Tasks pane open' : 'Tasks pane closed' }
   }
   try {
-    const done = await $.process.run(['python3', await py($), ...words], { timeoutMs: RUN_TIMEOUT_MS })
+    const done = await $.process.run(['python3', await py($), ...words], await runInit($))
     // a pane edit still queued would make the read give way: read after the queue instead
     if (await read($, tasksOpen)) void queue.then(() => reload($)).catch(() => undefined)
     const out = done.stdout.trimEnd()
@@ -515,24 +496,12 @@ async function toggle($: EngineInterface): Promise<void> {
   forgetTyping()
   await update($, tasksFocus, () => null) // no row control from an earlier opening
   await view($, v => ({ ...v, ...CLEAN, editError: null, pinned: [] }))
-  await restoreChoice($)
-  await seedColours($)
   startCheck($)
   await reload($)
 }
 
-async function restoreChoice($: EngineInterface) {
-  const stored = await $.store.get('tasks').catch(() => undefined)
-  if (typeof stored !== 'object' || stored === null) return
-  const { folder } = stored as Record<string, unknown>
-  if ((await read($, tasksFolder)) === null && (typeof folder === 'string' || folder === null)) {
-    await update($, tasksFolder, () => folder)
-    await syncBadge($, { folder })
-  }
-}
-
 async function closed($: EngineInterface) {
-  forgetTyping() // a field open as the pane closes is left unsaved, with no idle save to fire later
+  forgetTyping() // a field open as the pane closes is left unsaved
   searchIdle?.cancel()
   searchIdle = undefined
   ringAt = null
@@ -544,26 +513,6 @@ async function closed($: EngineInterface) {
   stopCheck()
 }
 
-// A folder picked from the list: the list closes, and an open add field belongs to
-// the folder left.
-async function choose($: EngineInterface, folder: string | null) {
-  forgetTyping()
-  await view($, v => ({ ...v, ...CLOSE_ADD, picking: false, renaming: null, selected: null, folderDraft: null, folderRename: null, confirmDelete: null, search: null, shown: PAGE, shownDone: PAGE }))
-  // a new folder starts at its top: the engine's window too (it does take a plain `start`)
-  await update($, tasksTop, () => null)
-  await $.ui.scroll({ to: 'start', in: PANE, block: 'start' })
-    .catch((err: unknown) => $.ui.log(`${LOG}scroll to start refused: ${err instanceof Error ? err.message : 'failed'}`, { to: 'debug' }))
-  await follow($, folder)
-}
-
-// The folder in view becomes `folder` (a pick, or a rename of the one in view), and a new session
-// opens there.
-async function follow($: EngineInterface, folder: string | null) {
-  await update($, tasksFolder, () => folder)
-  await syncBadge($, { folder })
-  await $.store.set('tasks', { folder }).catch(() => undefined)
-}
-
 // A session start, a reload of the mod included: the pane's open state from the engine, the
 // work a cut-off edit left marked dropped, and the open pane's check started again (I4). The
 // badge says the mod is here from now on.
@@ -571,11 +520,10 @@ export async function tasksSessionStart($: EngineInterface): Promise<void> {
   const panes = await $.ui.panes().catch(() => [])
   const open = panes.some(p => p.id === PANE)
   await update($, tasksOpen, () => open)
-  // the counts and folder as kept before this start (a reload keeps the session's values); none written yet here
-  await syncBadge($, { open, pending: await read($, tasksPending), folder: await read($, tasksFolder) })
+  // the counts as kept before this start (a reload keeps the session's values); none written yet here
+  await syncBadge($, { open, pending: await read($, tasksPending) })
   await view($, v => ({ ...v, ...CLEAN, inFlight: [], pinned: [] }))
   if (open) {
-    await seedColours($)
     startCheck($)
     await reload($)
   } else stopCheck()
@@ -585,12 +533,6 @@ export async function tasksSessionStart($: EngineInterface): Promise<void> {
 // event per plugin): an open pane reads the file again (A15).
 export async function tasksTurnEnd($: EngineInterface): Promise<void> {
   if (await read($, tasksOpen)) await reload($)
-}
-
-// The folder in view: the stored one while it exists, else the first (A17) — an earlier build's
-// stored All ('') included.
-function selected(state: TaskState, chosen: string | null): FolderView | null {
-  return state.folders.find(f => f.label === chosen) ?? state.folders[0] ?? null
 }
 
 type Row = { folder: FolderView; item: Item }
@@ -610,18 +552,18 @@ function rowsOf(folders: FolderView[], pinned: TasksView['pinned'], section: 'pe
 
 export const registerTasks = (on: Parameters<Register>[0]): void => {
   on('ui.close', { id: PANE }, async ($, e, next) => {
-    // Esc (or the close mark) while a field, a delete question or the folder list is open leaves
-    // that and keeps the pane: unsaved text goes, nothing is written. The next one closes.
+    // Esc (or the close mark) while a field is open leaves it and keeps the pane: unsaved text
+    // goes, nothing is written. The next one closes.
     try {
       // Esc (or the close mark) within 10 s of a change undoes it and keeps the pane — only while the
       // pane holds the keyboard: Esc at an idle prompt closes the pane too, and must never undo.
-      // An open search comes after a field, a question or the folder list, and before the undo (spec todo-search 4.5).
+      // An open search comes after a field, and before the undo (spec todo-search 4.5).
       const now = await read($, tasksView)
       const step = escapeStep(openEdit(now), now.search)
       if (e.origin.kind === 'person' && step === 'undo-or-close' && paneFocused && undo($)) return
       if (e.origin.kind === 'person' && step === 'edit') {
         forgetTyping()
-        await view($, v => ({ ...v, ...CLOSE_ADD, renaming: null, folderDraft: null, folderRename: null, confirmDelete: null, picking: false }))
+        await view($, v => ({ ...v, ...CLOSE_ADD, renaming: null }))
         return
       }
       if (e.origin.kind === 'person' && step === 'search') {
@@ -637,9 +579,8 @@ export const registerTasks = (on: Parameters<Register>[0]): void => {
     return next(e)
   })
 
-  // The person sends a prompt (Enter, or their phone; not a slash command): each earlier tint has one
-  // prompt fewer left, and the loaded tasks whose title the prompt holds are tinted for SENT_PROMPTS
-  // more. The send empties the box, so what was loaded is forgotten either way (owner 31 Oct 2026).
+  // The person sends a prompt (Enter, or their phone; not a slash command): the loaded tasks whose
+  // title it holds are ticked. The send empties the box, so what was loaded is forgotten either way.
   // A send from the phone leaves the desktop's box as it was, so what is loaded there and not named
   // stays loaded. `loaded` is let go before the send goes out, so a task loaded again meanwhile is
   // kept; a dropped send puts it all back.
@@ -653,16 +594,8 @@ export const registerTasks = (on: Parameters<Register>[0]): void => {
       loaded = [...was, ...loaded.filter(l => !was.some(w => w.id === l.id))]
       return r
     }
-    try {
-      const sent = named.map(l => l.id)
-      if (sent.length === 0 && Object.keys(await read($, tasksSent)).length === 0) return r
-      await update($, tasksSent, s => ({
-        ...Object.fromEntries(Object.entries(s).filter(([, left]) => left > 1).map(([id, left]) => [id, left - 1])),
-        ...Object.fromEntries(sent.map(id => [id, SENT_PROMPTS])),
-      }))
-    } catch {
-      $.ui.log(`${LOG}tint failed`, { to: 'debug' }) // the send stands; only its tint is lost
-    }
+    // Not awaited: the send never waits on the file, and a tick that fails says so on the pane.
+    void tickSent($, named).catch(() => $.ui.log(`${LOG}tick on send failed`, { to: 'debug' }))
     return r
   })
 
@@ -695,30 +628,14 @@ export const registerTasks = (on: Parameters<Register>[0]): void => {
       ringAt = to
       await update($, tasksFocus, () => (to !== null && ROW_KEY.test(to) ? to : null))
       // Only the person's own move lets the selection go: the pane's moves (a field opening, the
-      // ring parked on the ▼ after a save) keep it.
+      // ring parked on the hidden edit button after a save) keep it.
       if (e.origin.kind === 'person') await unselect($, to)
     }
-    // Focus leaving an open field (a click anywhere else) saves what was typed, as Enter would —
-    // only a field still open (one a re-read closed drops its typing), never the add field
-    // left by its own + (that closes it unsaved), and focus leaving to nothing (out of the pane,
-    // or Esc) only after a moment, which Esc's cancel (`forgetTyping`) stops.
-    const now = await read($, tasksView)
-    for (const key of [...typed.keys()]) {
-      if (to === key) {
-        // Back in its field (or redrawn in a new place): a leave-save waiting is called off, and
-        // the 10 s wait starts over.
-        idle.get(key)?.cancel()
-        idle.set(key, $.clock.after(IDLE_SAVE_MS, () => void read($, tasksView).then(v => (fieldOpen(v, key) ? saveTyped(key) : dropTyped(key))).catch(() => undefined)))
-        continue
-      }
-      if (to === `ok:${key}` || to === `no:${key}`) continue // its own ✓ or ✕ decides
-      if (!fieldOpen(now, key)) dropTyped(key)
-      else if (to === 'new-task' && key.startsWith('add:')) continue
-      else if (to === null) {
-        idle.get(key)?.cancel()
-        idle.set(key, $.clock.after(LEAVE_SAVE_MS, () => saveTyped(key)))
-      }
-      else saveTyped(key)
+    // Focus leaving an open field saves nothing: the field stays open with what was typed until its
+    // ✓, its x or Enter (owner 8 Nov 2026). Only a field no longer open (one a re-read closed) drops its typing.
+    if (typed.size > 0) {
+      const now = await read($, tasksView)
+      for (const key of [...typed.keys()]) if (!fieldOpen(now, key)) dropTyped(key)
     }
     return next(e)
   })
@@ -738,7 +655,7 @@ export const registerTasks = (on: Parameters<Register>[0]): void => {
   })
 }
 
-// A click away from the selected task (the + or the folder bar, another task, out of the pane)
+// A click away from the selected task (the +, another task, out of the pane)
 // lets it go: the ring on its own controls or on a task field keeps it. Leaving to nothing is
 // looked at again a moment later, as a closing field also leaves the ring nowhere, just before
 // its save parks it on the task.
@@ -752,16 +669,13 @@ async function unselect($: EngineInterface, to: string | null) {
   $.clock.after(LEAVE_SAVE_MS, () => { if (ringAt === null && queued === 0) void drop().catch(() => undefined) })
 }
 
-// Whether the field with this key is still open (an idle save fires only then).
+// Whether the field with this key is still open (a closed one drops its typing).
 const fieldOpen = (v: TasksView, key: string) =>
   key.startsWith('add:') ? v.adding
     : key.startsWith('rn:') ? v.renaming?.key === key.slice(3)
-    : key.startsWith('frn:') ? v.folderRename !== null
-    : key === 'nf:in' ? v.folderDraft !== null
     : false
 
-const openEdit = (v: TasksView) =>
-  v.adding || v.renaming !== null || v.folderDraft !== null || v.folderRename !== null || v.confirmDelete !== null || v.picking
+const openEdit = (v: TasksView) => v.adding || v.renaming !== null
 
 
 async function drawPane($: EngineInterface, e: any) {
@@ -772,8 +686,8 @@ async function drawPane($: EngineInterface, e: any) {
   // A thin dim grey line between tasks (owner 30 Oct 2026): an underlined run of blank cells on a
   // small row, cut at the pane's edge — text, which every surface draws (a 1px picture drew
   // nothing in the desktop pane). Held in a box as wide as the row and clipped: bare, the run's own
-  // width widened the list's column, and the desktop squeezed every title and the folder bar to
-  // nothing (the pane went blank at a folder's second task).
+  // width widened the list's column, and the desktop squeezed every title and the title bar to
+  // nothing (the pane went blank at a list's second task).
   // Off on a graphical surface (owner 30 Oct 2026): with the line drawn, selecting a task blanked
   // the desktop pane. The terminal keeps it.
   const ruled = (rows: unknown[], key: string) => !terminal ? rows : rows.flatMap((row, i) => i === 0 ? [row] : [
@@ -797,33 +711,33 @@ async function drawPane($: EngineInterface, e: any) {
   const state = stateOf(r)
   if (!state || (isError(r) && r.kind === 'read')) return <Text mono color="red">{(r as TaskError).error}</Text>
 
-  const chosen = await read($, tasksFolder)
-  const folder = selected(state, chosen)
-  const folders = folder ? [folder] : []
-  const names = state.folders.flatMap(f => [f.name, f.label])
   const busy = (k: string) => v.inFlight.includes(k)
   const lockOf = (row: Row) => rowKey(row.folder.label, row.item.title)
-  const firstNamed = state.folders.find(f => f.label !== TOP)
-  // Where an add goes: the folder in view, unless it is the top folder of a file with headings
-  // (todo.py refuses that): then the first named folder.
-  const addTarget = folder && (folder.label !== TOP || !firstNamed) ? folder.label : firstNamed?.label ?? FIRST_FOLDER
+  // One list (owner 6 Nov 2026): a file with `##` headings shows all their tasks, and an add goes to the first heading,
+  // as todo.py refuses the top of a file that has them.
+  const addTarget = state.folders.find(f => f.label !== TOP)?.label ?? TOP
 
-  const press = (fn: () => unknown) => () => void Promise.resolve(fn()).catch(() => undefined)
+  // Every press and key is refused while an open field holds typed text (`fieldHolds`); only a field's own ✓ and x
+  // (`ownPress`) act then.
+  const ownPress = (fn: () => unknown) => () => void Promise.resolve(fn()).catch(() => undefined)
+  const press = (fn: () => unknown) => ownPress(async () => (await fieldHolds($)) ? undefined : fn())
   // A row's own buttons: shown on the pointer's hover over the (keyed, visible) row; a terminal,
   // which has no hover, draws them always (A12).
-  const onHover = (...buttons: unknown[]) => terminal
-    ? <Box flexDirection="row">{buttons}</Box>
-    : <Box flexDirection="row" alignItems="center" columnGap="sm" display="none" hover={{ display: 'flex' }}>{buttons}</Box>
+  const onHover = (...buttons: unknown[]) => <Box flexDirection="row">{buttons}</Box>
   // An icon with a colour of its own (ICON_INK) is coloured Text with a blank press laid over it, as
-  // `pressable` does for words: a desktop Button draws its label, and any Text in it, in its own
-  // colour. The + has none and stays a dim Button.
-  const icon = (key: string, glyph: string, onPress: () => void) => {
+  // a desktop Button draws its label, and any Text in it, in its own
+  // colour. The + has none and stays a dim Button. `lit`: a task row's icon, shown only while its row is
+  // hovered, so drawn bright from the start (owner 8 Nov 2026).
+  const icon = (key: string, glyph: string, onPress: () => void, lit = false) => {
     const ink = ICON_INK[glyph]
     if (!ink) return <Button key={key} plain dimColor label={glyph} onPress={onPress} />
     // The app's face a step up, as a Button's label drew it (owner 30 Oct 2026: the old size), bold;
     // under the pointer, its bright version (the nearest keyed Box is the icon's own).
-    if (terminal) return pressable(key, <Text size="heading" bold color={ink}>{glyph}</Text>, 1, onPress) // no pointer there
-    const words = <Text size="heading" bold color={ink} hover={{ color: ICON_BRIGHT[ink] }}>{glyph}</Text>
+    const size = glyph === LEAVE ? 'footnote' : 'heading'
+    // A terminal paints a press's label as cells over whatever lies under it, so there the words are the press's own
+    // children (Text it draws in place, in its colour). No pointer there.
+    if (terminal) return <Button key={key} plain onPress={onPress}><Text size={size} bold color={ink}>{glyph}</Text></Button>
+    const words = <Text size={size} bold color={lit ? ICON_BRIGHT[ink] : ink} hover={{ color: ICON_BRIGHT[ink] }}>{glyph}</Text>
     return (
       <Box key={`${key}:at`} position="relative" paddingX="xs" paddingY="xs">
         {words}
@@ -850,75 +764,51 @@ async function drawPane($: EngineInterface, e: any) {
       </Box>
     </Box>
   )
-  // Words in our own colour and face that take a press: a desktop Button draws its label in its own
-  // font and colour, so the words are Text and a Button of blank cells lies over them, clipped to the
-  // words' width (the app's space is narrower than a mono cell, hence twice the cells).
-  // The press is laid over the words' own box (anchored on all four sides), never wider: a long title wraps inside the
-  // row, and a press sized by its longest line would lie over the row's icons and take their clicks.
-  // A terminal paints a press's label as cells over whatever lies under it, so there the words are
-  // the press's own children (Text it draws in place, in its colour).
-  const pressable = (key: string, words: unknown, cells: number, onPress: () => void) => terminal ? (
-    <Button key={key} plain onPress={onPress}>{words}</Button>
-  ) : (
-    <Box key={`${key}:at`} position="relative" flexShrink={1} minWidth={0}>
-      {words}
-      <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
-        <Button key={key} plain label={BLANK.repeat(Math.min(cells, PRESS_CELLS) * 2)} onPress={onPress} />
-      </Box>
-    </Box>
-  )
   const colours = await read($, tasksColours)
-  const colourOf = (f: FolderView): string | undefined => {
-    const k = colourKey(f.name)
-    return f.label === TOP || !Object.prototype.hasOwnProperty.call(colours, k) ? undefined : HUES[colours[k]!]
-  }
+  const colour = HUES[colours[state.path] ?? -1] ?? NO_COLOUR // the project's, one for the title bar and the stripes
   const spacer = (key: string) => <Box key={key} flexGrow={1} />
   // Every field the same way: as wide as its row (a column that grows stretches its one child), the
-  // cursor in it; Enter, the ✓ at its right, or 10 s with no typing saves what is typed; Esc leaves
-  // it (the ui.close hook). A task's field is two rows tall or more (`rows`), so Shift+Enter types a
-  // new line in it.
-  // `cancel`: a ✕ after the ✓, shown from the start (owner 31 Oct 2026: a way out before a key is
-  // typed; Esc may never reach the pane), that closes the field unsaved (a
-  // task's field: a new one's and an edit's).
-  const field = (key: string, shown: { value?: string; placeholder?: string; rows?: number }, save: Save, cancel?: () => unknown) => {
-    saves.set(key, save)
-    const commit = (t: string, by: Save = save) => {
-      idle.get(key)?.cancel()
-      idle.delete(key)
-      typed.delete(key)
+  // cursor in it; Enter or the ✓ at its right saves what is typed — nothing else does (owner 8 Nov 2026).
+  // `cancel`: an `x` after the ✓, shown from the start (owner 31 Oct 2026: a way out before a key is
+  // typed; Esc may never reach the pane), that closes the field unsaved. The ✓ shows whenever the field
+  // holds text (owner 4 Nov 2026), so an edit opened and left as it was closes with it too.
+  // Two rows tall or more, so Shift+Enter types a new line in it. It shows its next line 10 cells
+  // before the current one ends (owner 6 Nov 2026; never a scroll inside it, owner 4 Nov 2026),
+  // reckoned in mono cells less its icons' room — high on purpose, the app's font is narrower.
+  // Its height also places the list's window (`growRows`), so the lines being typed stay in view.
+  const fieldColumns = Math.max(10, (e.props?.bodyColumns ?? 80) - 10)
+  const growRows = (text: string) => fieldRows(text, fieldColumns)
+  const field = (key: string, shown: { value?: string; placeholder?: string }, save: Save, cancel: () => unknown) => {
+    const shapeOf = (t: string) => ({ rows: growRows(t), filled: t.trim() !== '' })
+    const signature = (s: { rows: number; filled: boolean }) => `${key}:${s.rows}:${s.filled}`
+    const drawn = shapeOf(typed.get(key) ?? shown.value ?? '')
+    shapes.set(key, signature(drawn))
+    // What was typed stays in `typed` until the field really closes (the focus sweep drops a closed field's,
+    // a reopened rename starts clean): a refused title or a failed save keeps it in the field, guard and all.
+    const commit = (t: string) => {
       // The field closed: a rename's save parks the ring on EDIT_KEY (`park`), a new task's once its
-      // save is done (the add field's save: a failed one keeps the field open and the ring in it);
-      // a folder field's as ringAfterSave says. Refused (a bad title), the field stays open and
-      // keeps the focus to be fixed.
-      if (by(t) !== false && !mobile && !/^(rn|add):/.test(key)) {
-        void read($, tasksView).then(now => into(ringAfterSave(key, now.selected !== null, EDIT_KEY))).catch(() => undefined)
-      }
+      // save is done (a failed one keeps the field open and the ring in it). Refused (a bad title), the
+      // field stays open and keeps the focus to be fixed.
+      save(t)
     }
     return (
       <Box key={`${key}:row`} flexDirection="row" flexGrow={1}>
         <Box flexDirection="column" flexGrow={1}>
           {/* A redraw while typing (the ✓ showing) draws what was typed, never the old text back. */}
-          <Input key={key} autoFocus {...shown} value={typed.get(key) ?? shown.value}
+          <Input key={key} autoFocus {...shown} rows={drawn.rows} value={typed.get(key) ?? shown.value}
             onInput={(t: string) => {
               typed.set(key, t)
-              if (v.touched !== key) void view($, x => ({ ...x, touched: key })).catch(() => undefined) // the ✓ shows from the first key
-              idle.get(key)?.cancel()
-              // Saves only while the field is still open, through the latest drawing's save (its row
-              // as now shown), and never an emptied field.
-              idle.set(key, $.clock.after(IDLE_SAVE_MS, () => void read($, tasksView).then(now => {
-                const left = typed.get(key)
-                const latest = saves.get(key)
-                if (left === undefined || left.trim() === '' || !latest || !fieldOpen(now, key)) {
-                  idle.delete(key)
-                  return
-                }
-                commit(left, latest)
-              }).catch(() => undefined)))
+              // Typing that changes the field's height, or whether it holds text, redraws it: its rows, its ✓.
+              const shape = signature(shapeOf(t))
+              if (shapes.get(key) !== shape) {
+                shapes.set(key, shape)
+                void view($, x => ({ ...x, shape })).catch(() => undefined)
+              }
             }}
             onSubmit={(t: string) => commit(t)} />
         </Box>
-        {v.touched === key && icon(`ok:${key}`, '✓', press(() => commit(typed.get(key) ?? shown.value ?? '')))}
-        {cancel && icon(`no:${key}`, '✕', press(() => (dropTyped(key), cancel())))}
+        {drawn.filled && icon(`ok:${key}`, '✓', ownPress(() => commit(typed.get(key) ?? shown.value ?? '')))}
+        {icon(`no:${key}`, LEAVE, ownPress(() => (dropTyped(key), cancel())))}
       </Box>
     )
   }
@@ -928,8 +818,7 @@ async function drawPane($: EngineInterface, e: any) {
   // t r i a dd o b act on the selected task (j / k), else on the row whose control holds the focus ring.
   const idOf = (row: Row) => pinId(row.folder.label, row.item.title, row.item.nth)
   // ◀ or l: the task into the prompt box (owner 31 Oct 2026) — the draft when the box is empty, else on
-  // a line after what is typed there. Once the person sends a prompt holding it, it is tinted.
-  const sentIds = new Set(Object.keys(await read($, tasksSent)))
+  // a line after what is typed there. Once the person sends a prompt holding it, it is ticked.
   const load = async (row: Row) => {
     const { title } = row.item
     try {
@@ -963,14 +852,16 @@ async function drawPane($: EngineInterface, e: any) {
   // engine awaits its drawing; refused only while the pane does not hold the keys).
   const into = (key: string) => $.ui.focus({ requestId: PANE, key }).catch(() => undefined)
   // A field in the list is kept in view by the drawing (the window starts at it if need be); one at
-  // the top sits under the folder row, always in view.
-  const startRename = (row: Row) =>
-    view($, x => ({ ...x, renaming: { key: row.item.key, draft: row.item.title }, touched: null })).then(() => into(`rn:${row.item.key}`))
-  const openAdd = () => view($, x => ({ ...x, adding: true, addAt: null, touched: null })).then(now => into(`add:${now.adds}`))
+  // the top sits under the title row, always in view.
+  const startRename = (row: Row) => {
+    dropTyped(`rn:${row.item.key}`) // a reopened rename starts clean
+    return view($, x => ({ ...x, renaming: { key: row.item.key, draft: row.item.title }, shape: null })).then(() => into(`rn:${row.item.key}`))
+  }
+  const openAdd = () => view($, x => ({ ...x, adding: true, addAt: null, shape: null })).then(now => into(`add:${now.adds}`))
   // vi's o and O (b here: a hotkey can't tell Shift+o from o): a new task under or over the
   // selected one; on a completed task, at the top as + does.
   const openAt = (where: 'below' | 'above') => keyPress(row => row.item.done ? openAdd()
-    : (forgetTyping(), view($, x => ({ ...x, adding: true, addAt: { id: idOf(row), where }, renaming: null, touched: null, addDraft: '' })).then(now => into(`add:${now.adds}`))))
+    : (forgetTyping(), view($, x => ({ ...x, adding: true, addAt: { id: idOf(row), where }, renaming: null, shape: null, addDraft: '' })).then(now => into(`add:${now.adds}`))))
   // vi's dd: a second d on the same task within a second deletes it.
   const dd = keyPress(async row => {
     const id = idOf(row)
@@ -981,68 +872,8 @@ async function drawPane($: EngineInterface, e: any) {
   }, true)
 
   const count = (key: string, n: number) => <Text key={key} mono dimColor tabular>{` ${n}`}</Text>
-  // The folder in view, reversed: bold black on its colour (light grey for the top folder, which
-  // has none). In the list it takes no press: choosing it again would do nothing.
-  const selectedName = (label: string, colour: string | undefined, key = 'f:selected') => (
-    // The colour behind the letters only, no blank either side (owner 2 Nov 2026).
-    <Text key={key} mono bold color={SELECTED_INK} backgroundColor={colour ?? SELECTED_PLAIN}>{label}</Text>
-  )
-  // The folder list, open under the title: each folder (its dot, name, count, and ✏ ✕ on hover),
-  // then a + for a new folder. A pick closes it. Every field: Enter saves, Esc leaves it.
-  const listRows = [
-    ...state.folders.map((f, i) => (
-      <Box key={`fr:${i}`} flexDirection="row">
-        {!mobile && v.folderRename?.label === f.label ? (
-          field(`frn:${i}`, { value: v.folderRename.draft }, t => {
-            const bad = checkFolder(t, names, f.name)
-            if (bad) { void view($, x => ({ ...x, editError: bad })).catch(() => undefined); return false }
-            void view($, x => ({ ...x, folderRename: null, touched: null }))
-              .then(() => edit($, { op: 'folder-rename', from: f.label, to: t }, `folder:${f.label}`, undefined, { from: f.name, to: t }))
-              .then(async ok => { if (ok && (await read($, tasksFolder)) === f.label) await follow($, t.trim()) })
-              .catch(() => undefined)
-          })
-        ) : !mobile && v.confirmDelete === f.label ? (
-          <Box flexDirection="row">
-            <Text mono>Delete '{f.label}' and its {f.pending + f.done} tasks?</Text>
-            <Button key={`fdy:${i}`} label="Delete" onPress={press(() => view($, x => ({ ...x, confirmDelete: null })).then(() => edit($, { op: 'folder-delete', name: f.label }, `folder:${f.label}`)))} />
-            <Button key={`fdn:${i}`} label="Cancel" onPress={press(() => view($, x => ({ ...x, confirmDelete: null })))} />
-          </Box>
-        ) : (
-          <Box key={`fn:${i}`} flexDirection="row">
-            <Text mono color={colourOf(f)}>{f.label === TOP ? '  ' : '● '}</Text>
-            {folder?.label === f.label
-              ? selectedName(f.label, colourOf(f))
-              : pressable(`f:${i}`, <Text mono bold color={colourOf(f)}>{` ${f.label} `}</Text>, f.label.length + 2,
-                press(() => choose($, f.label)))}
-          </Box>
-        )}
-        {spacer(`fs:${i}`)}
-        {!mobile && f.label !== TOP && v.folderRename?.label !== f.label && v.confirmDelete !== f.label && !busy(`folder:${f.label}`) &&
-          onHover(
-            icon(`fre:${i}`, EDIT, press(() => view($, x => ({ ...x, folderRename: { label: f.label, draft: f.name }, touched: null })).then(() => into(`frn:${i}`)))),
-            icon(`fde:${i}`, '✕', press(() => view($, x => ({ ...x, confirmDelete: f.label })))),
-          )}
-        {v.folderRename?.label !== f.label && v.confirmDelete !== f.label && count(`fc:${i}`, f.pending)}
-      </Box>
-    )),
-    !mobile && (v.folderDraft === null ? (
-      <Box key="nfr" flexDirection="row">
-        <Text mono>{'  '}</Text>
-        {icon('nf', '+', press(() => view($, x => ({ ...x, folderDraft: '', touched: null })).then(() => into('nf:in'))))}
-      </Box>
-    ) : (
-      <Box key="nfb" flexDirection="row">
-        <Text mono>{'  '}</Text>
-        {field('nf:in', { placeholder: 'Folder name' }, t => {
-          const bad = checkFolder(t, names)
-          if (bad) { void view($, x => ({ ...x, editError: bad })).catch(() => undefined); return false }
-          void view($, x => ({ ...x, folderDraft: null, touched: null })).then(() => edit($, { op: 'folder-add', name: t }, `folder-add:${t}`)).catch(() => undefined)
-        })}
-      </Box>
-    )),
-  ]
 
-  // `shaded`: every second row of its list, on the gold stripe; the others on the navy (not in a
+  // `shaded`: every second row of its list, on the project's colour; the others on the navy (not in a
   // terminal, whose ground may be light).
   const rowView = (row: Row, place = -1, shaded = false) => {
     const k = row.item.key
@@ -1051,12 +882,17 @@ async function drawPane($: EngineInterface, e: any) {
     if (v.renaming?.key === k && !mobile) {
       return (
         <Box key={`row:${k}`} flexDirection="row">
-          {field(`rn:${k}`, { value: row.item.title, rows: Math.max(2, row.item.title.split('\n').length) }, t => {
+          {field(`rn:${k}`, { value: row.item.title }, t => {
             const bad = checkTitle(t)
-            if (bad) { void view($, x => ({ ...x, editError: bad })).catch(() => undefined); return false }
-            void view($, x => ({ ...x, renaming: null, touched: null })).then(() =>
-              edit($, { op: 'rename', folder: row.folder.label, nth: row.item.nth, title: row.item.title, to: t }, lockOf(row), undefined, undefined, `rn:${k}`)).catch(() => undefined)
-          }, () => view($, x => ({ ...x, renaming: null, touched: null })).then(() => into(EDIT_KEY)))}{/* ✕: closed unsaved, the ring back on the task */}
+            if (bad) { void view($, x => ({ ...x, editError: bad })).catch(() => undefined); return }
+            // Left as it was (its ✓ pressed, owner 4 Nov 2026): closed, nothing written. Spaces trimmed and blank lines
+            // dropped, as checkTitle and todo.py do — no other white space.
+            const same = t.split('\n').map(line => line.replace(/^ +| +$/g, '')).filter(Boolean).join('\n') === row.item.title
+            void view($, x => ({ ...x, renaming: null, shape: null })).then(async () => {
+              if (same) await into(EDIT_KEY)
+              else await edit($, { op: 'rename', folder: row.folder.label, nth: row.item.nth, title: row.item.title, to: t }, lockOf(row), undefined, `rn:${k}`)
+            }).catch(() => undefined)
+          }, () => view($, x => ({ ...x, renaming: null, shape: null })).then(() => into(EDIT_KEY)))}{/* x: closed unsaved, the ring back on the task */}
         </Box>
       )
     }
@@ -1068,34 +904,32 @@ async function drawPane($: EngineInterface, e: any) {
     // or `r`) opens it for editing.
     // Shown only while the pane holds the keyboard: a click out of it lets the task go.
     const chosen = e.props?.isFocused !== false && v.selected === pinId(row.folder.label, row.item.title, row.item.nth)
-    // Sent to the prompt box and still pending: the lightest shade of its folder's colour, until
-    // the person ticks it (the selected task's ground wins).
-    const sent = !struck && !terminal && sentIds.has(idOf(row))
-    // Otherwise its stripe, the title in the opposite stripe colour; a done one keeps them, struck (owner 1 Nov 2026).
-    // The selected task swaps its stripe's two colours (owner 2 Nov 2026: not grey), ahead of a sent task's tint; a
-    // terminal, with no stripes, keeps the grey.
-    const striped = !terminal && (chosen || !sent)
-    const gold = chosen ? !shaded : shaded // on the gold ground, the title in navy
-    const ground = striped ? (gold ? GOLD : NAVY) : chosen ? SELECTED_ROW : sent ? `${colourOf(row.folder) ?? '#FFFFFF'}${SENT_ALPHA}` : undefined
-    const ink = striped ? (gold ? NAVY : GOLD) : undefined
-    // One step under body (owner 30 Oct 2026: a touch smaller).
+    // Its stripe, the title in the other stripe's colour; a done one keeps them, struck (owner 1 Nov 2026).
+    // The second stripe is the project's colour, as the title bar.
+    // The selected task sits on a ground of its own (owner 4 Nov 2026: swapped stripes matched the row beside it);
+    // a terminal, with no stripes, keeps the grey.
+    const striped = !terminal
+    const onStripe = shaded && !chosen // on the project's colour, the title in navy
+    const ground = striped ? (chosen ? SELECTED_STRIPE : onStripe ? colour : NAVY) : chosen ? SELECTED_ROW : undefined
+    const ink = striped ? (onStripe ? NAVY : colour) : undefined
+    // One step under body (owner 30 Oct 2026: a touch smaller); a long one cut after TITLE_LINES lines.
     const title = (
       <Text mono size="footnote" bold dimColor={dim || (struck && !striped)} strikethrough={struck} {...(ink ? { color: ink } : {})}>
-        {row.item.title}
+        {shownTitle(row.item.title, wrapAt, TITLE_LINES)}
       </Text>
     )
     const gap = (key: string) => <Text key={key} mono>{' '}</Text>
     // No ↑ ↓ while a search is on: a place among the matches is no place in the folder.
     const order = struck || searching ? [] : [
-      place > 0 ? icon(`u:${k}`, '↑', press(() => edit($, { op: 'down', ...at }, lockOf(row)))) : gap(`u0:${k}`),
-      place >= 0 && place < lastPlace ? icon(`d:${k}`, '↓', press(() => edit($, { op: 'up', ...at }, lockOf(row)))) : gap(`d0:${k}`),
+      place > 0 ? icon(`u:${k}`, '↑', press(() => edit($, { op: 'down', ...at }, lockOf(row))), true) : gap(`u0:${k}`),
+      place >= 0 && place < lastPlace ? icon(`d:${k}`, '↓', press(() => edit($, { op: 'up', ...at }, lockOf(row))), true) : gap(`d0:${k}`),
     ]
     // A completed task has no ◀ or ✏ (owner 30 Oct 2026): a ↩ that puts it back among the tasks, and its ✕.
     const icons = [
       ...order,
-      ...(struck ? [] : [icon(`s:${k}`, SEND, send(row))]),
-      struck ? icon(`p:${k}`, '↩', press(() => tick(row))) : icon(`e:${k}`, EDIT, press(() => startRename(row))),
-      icon(`x:${k}`, '✕', press(() => edit($, { op: 'delete', ...at }, lockOf(row)))),
+      ...(struck ? [] : [icon(`s:${k}`, SEND, send(row), true)]),
+      struck ? icon(`p:${k}`, '↩', press(() => tick(row)), true) : icon(`e:${k}`, EDIT, press(() => startRename(row)), true),
+      icon(`x:${k}`, '✕', press(() => edit($, { op: 'delete', ...at }, lockOf(row))), true),
     ]
     // On a graphical surface the icons float over the row's right end while it is hovered (the
     // selected row too: shown always they would hide its title's end), on its own ground, so
@@ -1112,38 +946,37 @@ async function drawPane($: EngineInterface, e: any) {
         {tickMark(k, struck ? '●' : '○', ink, dim, dim ? () => undefined : press(() => tick(row)))}
         <Box key={`tt:${k}`} flexShrink={1} minWidth={0}>{title}</Box>
         {spacer(`rs:${k}`)}
-        {!mobile && !dim && !listOver && (!terminal ? floating() : chosen ? <Box flexDirection="row">{icons}</Box> : onHover(...icons))}
+        {!mobile && !dim && (!terminal ? floating() : chosen ? <Box flexDirection="row">{icons}</Box> : onHover(...icons))}
       </Box>
     )
   }
 
-  // Search (spec todo-search.md FR2): the folder in view's tasks holding every word; Completed's matches open.
+  // Search (spec todo-search.md FR2): the tasks holding every word; Completed's matches open.
   const searchOpen = !mobile && v.search != null
-  // A docked graphical pane can lay the folder list over the tasks (`overlay`, below): while it is open the tasks
-  // draw no icons of their own, so none can be hit through it.
-  const listOver = v.picking && !terminal && !mobile && own
   const searching = searchOpen && queryWords(v.search!).length > 0
-  const keep = (row: Row) => !searching || matches(row.item.title, v.search!)
+  // A task whose rename is open stays drawn, its field's ✓ and x with it (owner 8 Nov 2026: only they close it).
+  const keep = (row: Row) => !searching || matches(row.item.title, v.search!) || v.renaming?.key === row.item.key
   const showDone = v.showCompleted || searching
-  const pendingRows = rowsOf(folders, v.pinned, 'pending').filter(keep)
-  const doneRows = rowsOf(folders, v.pinned, 'done').filter(keep)
+  const pendingRows = rowsOf(state.folders, v.pinned, 'pending').filter(keep)
+  const doneRows = rowsOf(state.folders, v.pinned, 'done').filter(keep)
   // Places count the tasks still pending: a row a tick holds in place takes none.
   const ordered = pendingRows.filter(row => !row.item.done)
   const lastPlace = ordered.length - 1
   // o / b: the add field under or over its task (the list is newest first, so under is earlier in
   // the file: `before`); a save inserts the task there.
   const addKey = `add:${v.adds}`
-  const addField = () => field(addKey, { placeholder: 'Add a task', value: v.addDraft, rows: 2 }, t => {
+  const addField = () => field(addKey, { placeholder: 'Add a task', value: v.addDraft }, t => {
     const bad = checkTitle(t)
-    if (bad) { void view($, x => ({ ...x, editError: bad, addDraft: t })).catch(() => undefined); return false }
+    if (bad) { void view($, x => ({ ...x, editError: bad, addDraft: t })).catch(() => undefined); return }
     const at = v.addAt && allRows().find(row => idOf(row) === v.addAt!.id)
     void (at
-      ? edit($, { op: 'insert', folder: at.folder.label, nth: at.item.nth, title: at.item.title, to: t, where: v.addAt!.where === 'below' ? 'before' : 'after' }, `add:${t}`, undefined, undefined, addKey)
-      : edit($, { op: 'add', folder: addTarget, title: t }, `add:${t}`, undefined, undefined, addKey))
-      // Saved: the ring leaves the closed field (ringAfterSave); failed, it stays in the open one.
-      .then(async ok => { if (ok && !mobile) await into(ringAfterSave(addKey, (await read($, tasksView)).selected !== null, EDIT_KEY)) })
+      ? edit($, { op: 'insert', folder: at.folder.label, nth: at.item.nth, title: at.item.title, to: t, where: v.addAt!.where === 'below' ? 'before' : 'after' }, `add:${t}`, undefined, addKey)
+      : edit($, { op: 'add', folder: addTarget, title: t }, `add:${t}`, undefined, addKey))
+      // Saved: the ring leaves the closed field for EDIT_KEY, so Enter edits the selected task and the pane
+      // keeps the keys (never onto the +, where Enter would open a new task); failed, it stays in the open one.
+      .then(async ok => { if (ok && !mobile) await into(EDIT_KEY) })
       .catch(() => undefined)
-  }, () => view($, x => ({ ...x, ...CLOSE_ADD })).then(now => { // ✕: closed unsaved, the ring back on the selected task
+  }, () => view($, x => ({ ...x, ...CLOSE_ADD })).then(now => { // x: closed unsaved, the ring back on the selected task
     const key = keyOf(stateOf(now.result), now.selected)
     return key === undefined ? undefined : into(EDIT_KEY)
   }))
@@ -1157,10 +990,12 @@ async function drawPane($: EngineInterface, e: any) {
   const wrapAt = Math.max(10, (e.props?.bodyColumns ?? 80) - 6)
   const tall = (title: string, least = 1) =>
     LINE_ROWS * Math.max(least, title.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / wrapAt)), 0))
-  const fieldAt = (row: Row, where: 'below' | 'above'): Entry[] => near(row, where).map(el => ({ el, rows: tall('', 2), field: true as const }))
+  // An open field as tall as it is drawn (growRows, from what is typed); a task as its title is shown, at most TITLE_LINES.
+  const addRows = () => LINE_ROWS * growRows(typed.get(addKey) ?? v.addDraft)
+  const fieldAt = (row: Row, where: 'below' | 'above'): Entry[] => near(row, where).map(el => ({ el, rows: addRows(), field: true as const }))
   const rowEntry = (row: Row, el: unknown): Entry => !mobile && v.renaming?.key === row.item.key
-    ? { el, rows: tall(row.item.title, 2), id: idOf(row), field: true }
-    : { el, rows: tall(row.item.title), id: idOf(row) }
+    ? { el, rows: LINE_ROWS * growRows(typed.get(`rn:${row.item.key}`) ?? row.item.title), id: idOf(row), field: true }
+    : { el, rows: tall(shownTitle(row.item.title, wrapAt, TITLE_LINES)), id: idOf(row) }
   const pendingEntries: Entry[] = shownPending.flatMap((row, i) => [
     ...fieldAt(row, 'above'), rowEntry(row, rowView(row, ordered.indexOf(row), i % 2 === 1)), ...fieldAt(row, 'below'),
   ])
@@ -1169,16 +1004,13 @@ async function drawPane($: EngineInterface, e: any) {
   // "show more") sits at the top instead, still saving next to its task.
   const addOnTop = v.adding && !shownPending.some(row => idOf(row) === v.addAt?.id)
 
-  const header = folder?.label ?? FIRST_FOLDER
   const shownPath = tildePath(state.path, await homeOf($))
   const readAt = new Date(v.readAt)
   const hh = readAt.getHours() % 12 || 12
   const time = `${hh}.${String(readAt.getMinutes()).padStart(2, '0')}${readAt.getHours() < 12 ? 'a' : 'p'}`
 
-  const headerColour = folder ? colourOf(folder) : undefined
-  const headerCount = folder?.pending ?? 0
+  const headerCount = state.folders.reduce((n, f) => n + f.pending, 0)
   const canAdd = !mobile
-  // The title bar or its ▼ opens the folder list, or closes it unchanged.
   // j / k (Gmail's next / previous): the selection moves to the next or previous task shown (kept
   // in the view, so a hotkey's own button taking the ring never loses it), the task is
   // highlighted, and the ring rests on EDIT_KEY, so Enter edits it.
@@ -1212,15 +1044,11 @@ async function drawPane($: EngineInterface, e: any) {
   if (own && at0 !== lastAt) landedTop = null // the engine's window moved: it arrived, or was dragged
   if (own) lastAt = at0
   const base = own ? pinned ?? at0 : 0
-  // The rows the list has under what stays put (the folder row, an open folder list or top field,
-  // an error, the path), reckoned low as the entries are reckoned high.
+  // The rows the list has under what stays put (the title row, a top field, an error, the path),
+  // reckoned low as the entries are reckoned high.
   // What sits between the title row and the list.
-  const above = (state.state === 'nofile' ? 1 : 0) + (addOnTop ? tall('', 2) : 0) + (v.editError !== null ? 1 : 0)
-  // The folder list lies over the tasks rather than pushing them down (owner 2 Nov 2026, img 97) in a docked graphical
-  // pane while it fits under the title row; else — and in a terminal, on a phone, or a pane shown inline, which fits
-  // its tree — it stays in place.
-  const overlay = !terminal && !mobile && own && listRows.length + 1 <= rows - 3 - above
-  const room = rows - 3 - (v.picking && !overlay ? listRows.length + 1 : 0) - above
+  const above = (state.state === 'nofile' ? 1 : 0) + (addOnTop ? addRows() : 0) + (v.editError !== null ? 1 : 0)
+  const room = rows - 3 - above
   // The window's first entry that keeps entry `at` whole in view, moving from `from` as little as
   // it can.
   const topFor = (from: number, at: number) => {
@@ -1269,9 +1097,9 @@ async function drawPane($: EngineInterface, e: any) {
     await $.ui.focus({ requestId: PANE, key: EDIT_KEY }).catch(() => undefined)
   })
 
-  // The search bar opens on the title row with the cursor in it; the folder list closes and the selection goes, so
-  // no key acts on a task the search hides. Open already: the cursor goes back into it.
-  // An open rename closes (its typed text is saved as the ring leaves it): its row may not match.
+  // The search bar opens on the title row with the cursor in it; the selection goes, so no key acts on a task the
+  // search hides. Open already: the cursor goes back into it.
+  // An open rename with nothing typed closes (one holding text refuses the lens): its row may not match.
   // A bar holding no words closes itself after 10 s, back to the normal look (owner 2 Nov 2026): timed from its opening,
   // and again from each time it is emptied; words stop it.
   const idleSearch = () => {
@@ -1291,68 +1119,37 @@ async function drawPane($: EngineInterface, e: any) {
     searchIdle?.cancel()
     searchIdle = undefined
   }
-  const openSearch = press(() => view($, x => ({ ...x, search: x.search ?? '', picking: false, selected: null, renaming: null }))
+  const openSearch = press(() => view($, x => ({ ...x, search: x.search ?? '', selected: null, renaming: null }))
     .then(() => (idleSearch(), into('search:in'))))
-  // A new query: the list starts at its top, as a folder chosen does, so no match sits above the window; an input
+  // A new query: the list starts at its top, so no match sits above the window; an input
   // landing after the bar closed opens nothing.
   const narrow = (t: string) => (queryWords(t).length === 0 ? idleSearch() : stopIdleSearch(), view($, x => (x.search == null ? x : { ...x, search: t, selected: null })))
     .then(() => update($, tasksTop, () => null))
     .then(() => $.ui.scroll({ to: 'start', in: PANE, block: 'start' }))
     .catch(() => undefined)
 
-  const togglePick = press(async () => {
-    forgetTyping()
-    await view($, x => ({
-      ...x, picking: !x.picking, folderDraft: null, folderRename: null, confirmDelete: null,
-      editError: x.folderDraft !== null || x.folderRename !== null ? null : x.editError, // a folder field's error goes with it
-    }))
-    // Opened over the tasks, the list comes last in the tree: the ring goes into it, never through the tasks.
-    if (v.picking || !overlay) return
-    const first = state.folders.findIndex(f => f.label !== folder?.label)
-    await into(first >= 0 ? `f:${first}` : 'nf')
-  })
-
   const body = (
     <Box key="window" flexDirection="column" {...(own ? { height: rows } : { minHeight: rows > 0 ? rows : undefined })}>
       <Box flexDirection="row" flexGrow={1} minHeight={0}>
         <Box flexDirection="column" flexGrow={1} minHeight={0}>
-          {/* The title row (owner 1 Nov 2026): the folder and its ▼, the free gap, the ⌕, the count, the +. The search
-              opens at the gap's start — the folder, the count and the + stay — the rest of the gap free, its ✕ in the ⌕'s
-              place (owner 2 Nov 2026): a one-row Input draws at the desktop's own width whatever its box or label
-              (img 29, 33), and only the two-row form, 74 px tall, filled it (img 30). */}
+          {/* The title row: `Tasks`, the free gap, the ⌕, the count, the +. The search opens at the gap's start — the
+              title, the count and the + stay — the rest of the gap free, its ✕ in the ⌕'s place (owner 2 Nov 2026): a
+              one-row Input draws at the desktop's own width whatever its box or label (img 29, 33), and only the
+              two-row form, 74 px tall, filled it (img 30). */}
           <Box key="head" flexDirection="row">
-            {/* The folder bar and its ▼ in a row of their own with no gap: a graphical surface draws one of its own
-                between the presses of a row that sets none (owner 2 Nov 2026: the ▼ about 2 px from the bar). */}
-            <Box key="title:row" flexDirection="row" columnGap={0} flexShrink={1} minWidth={0}>
-              {pressable('title', selectedName(header, headerColour, 'title:words'), header.length, togglePick)}
-              {(terminal || mobile) && <Text mono> </Text>}
-              {/* Dim until the list is open (owner 30 Oct 2026). On a graphical surface one size step under the folder
-                  bar and hard by it, no blank between (owner 2 Nov 2026): Text under a blank press, as a Button takes no
-                  size. */}
-              {terminal || mobile ? (
-                <Button key="pick" plain dimColor={!v.picking} label={v.picking ? '▲' : '▼'} onPress={togglePick} />
-              ) : (
-                <Box key="pick:at" position="relative" flexShrink={0} alignSelf="center" paddingRight="xs">
-                  {/* A mild gap from the bar, about 2 px (owner 2 Nov 2026): a thin space, which is never collapsed. */}
-                  <Text size="footnote">{' '}</Text>
-                  <Text size="footnote" dimColor={!v.picking}>{v.picking ? '▲' : '▼'}</Text>
-                  <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
-                    <Button key="pick" plain label={BLANK.repeat(2)} onPress={togglePick} />
-                  </Box>
-                </Box>
-              )}
-            </Box>
+            {/* Bold black on the project's colour, the colour behind the letters only (owner 2 Nov 2026). */}
+            <Text key="title" mono bold color={SELECTED_INK} backgroundColor={colour}>{TITLE}</Text>
             {searchOpen && (
               // No `value` while open: a redraw must never put back an older text over what was typed since. A terminal
               // draws a field across its box, so there the bar keeps all of the gap.
               <Box key="search:row" flexDirection="row" minWidth={0} {...(terminal ? { flexGrow: 1 } : {})}>
                 <Text mono> </Text>
                 <Box key="search:col" flexDirection="column" {...(terminal ? { flexGrow: 1 } : {})}>
-                  <Input key="search:in" autoFocus placeholder={`search ${header}`}
+                  <Input key="search:in" autoFocus placeholder="search tasks"
                     onInput={(t: string) => void narrow(t)}
                     onSubmit={(t: string) => void (async () => {
                       // Enter's own text decides, not the last drawing's: the first match, else the cursor stays.
-                      const first = [...rowsOf(folders, v.pinned, 'pending'), ...rowsOf(folders, v.pinned, 'done')].find(row => matches(row.item.title, t))
+                      const first = allRows().find(row => matches(row.item.title, t))
                       await view($, x => ({ ...x, search: t, selected: first ? idOf(first) : null }))
                       await into(first ? EDIT_KEY : 'search:in')
                     })().catch(() => undefined)} />
@@ -1371,25 +1168,17 @@ async function drawPane($: EngineInterface, e: any) {
               return v.adding ? view($, x => ({ ...x, ...CLOSE_ADD })) : openAdd()
             }))}
           </Box>
-          {v.picking && !overlay && <Box key="list" flexDirection="column" marginBottom={1}>{listRows}</Box>}
           {state.state === 'nofile' && <Text mono dimColor>No task file yet — created on first add: {shownPath}</Text>}
           {canAdd && addOnTop && <Box key="addb" flexDirection="row">{addField()}</Box>}
           {v.editError !== null && <Text mono color="red">{v.editError}</Text>}
           {/* The list, from the window's first entry, clipped under what stays put. No gap between
               tasks on a graphical surface (owner 30 Oct 2026): the stripes part them. */}
-          <Box key="scroll" flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} overflow={own ? 'hidden' : 'visible'} {...(overlay ? { position: 'relative' } : {})}>
+          <Box key="scroll" flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} overflow={own ? 'hidden' : 'visible'}>
             <Box key="pending" flexDirection="column" rowGap={terminal ? 'xs' : 0}>{terminal ? ruled(listed, 'p') : shown.pending}</Box>
             {shown.more}
             {shown.completed}
             {showDone && <Box key="done" flexDirection="column" rowGap={terminal ? 'xs' : 0}>{terminal ? ruled(segments.done.map(x => x.el), 'd') : shown.done}</Box>}
             {shown.moreDone}
-            {/* The folders over the tasks (owner 2 Nov 2026): last here, so painted over the rows (themselves positioned),
-                laid at the top of the list's box, on a solid ground of their own. */}
-            {v.picking && overlay && (
-              <Box key="list" position="absolute" top={0} left={0} right={0} flexDirection="column" backgroundColor={LIST_GROUND} paddingBottom="xs">
-                {listRows}
-              </Box>
-            )}
           </Box>
         </Box>
       </Box>

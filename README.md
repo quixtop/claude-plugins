@@ -12,6 +12,22 @@ In Claude Code:
 
 To pick up newer versions: `/plugin marketplace update quixtop`.
 
+## amf — AMF on your Mac, one step
+
+AMF is the Agent Management Framework for Claude Code agents: a board of what they are doing,
+running on your own Mac.
+
+```
+/plugin install amf@quixtop
+```
+
+Then say **install AMF** (or type `/amf:install-amf`). Claude checks whether AMF is installed,
+installs it with Homebrew if not, starts it, and opens its board. Saying it again later just starts
+AMF and opens the board.
+
+Needs macOS and [Homebrew](https://brew.sh). The same install is one pasted line at
+[amf.quixtop.com](https://amf.quixtop.com).
+
 ## ctxbar — the context window above the prompt
 
 The context window as one row above the prompt, a colour per category, with the plan's weekly usage and its reset

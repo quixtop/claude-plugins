@@ -24,18 +24,14 @@ export type TasksView = {
   result: TaskState | TaskError | null // null: reading…
   editError: string | null // the inline line after a failed edit, until the next good one
   pinned: { id: string; done: boolean }[] // ticked/unticked rows held in place 10 s (A19): `folder\0title\0nth` and the state the edit left; one whose task changed state again is let go
-  inFlight: string[] // row keys (and `folder:<label>`) with an edit queued: drawn dim, take no press
+  inFlight: string[] // row keys with an edit queued: drawn dim, take no press
   showCompleted: boolean
   shown: number // pending rows shown before "show more"
   shownDone: number // completed rows shown before "show more"
   renaming: { key: string; draft: string } | null
-  folderDraft: string | null // '' while the new-folder field is open (its text lives in the Input), null while closed
-  folderRename: { label: string; draft: string } | null
-  confirmDelete: string | null // the folder label whose delete asks
   adding: boolean // the add field is open: the title row's + opens it, the + again or Esc closes it
   addAt: { id: string; where: 'below' | 'above' } | null // o / b: the add field opens under or over this task (its `folder\0title\0nth`), not at the top
-  picking: boolean // the folder list is open under the title: it or its ▼ opens and closes it, a pick closes it
-  touched: string | null // the key of the open field typed in since it opened: only then does its ✓ show
+  shape: string | null // the open field's key, its rows and whether it holds text, as typing last left them: a change redraws its height and its ✓
   search: string | null // the search bar across the title row: null closed, else its text (spec todo-search.md FR2)
   selected: string | null // the task j / k landed on (`folder\0title\0nth`): highlighted, its icons shown; t r i a dd o b and Enter act on it
   addDraft: string // the add field's text, put back after a failed add
@@ -43,13 +39,12 @@ export type TasksView = {
   readAt: number // ms since the epoch of the last read
 }
 
-// What another mod (ctxbar's task icon) sees of the pane: the mod is here, the pane up or not, the pending tasks at the
-// last read (in all and by folder label; null before one), and the folder chosen in the pane (null before a choice).
+// What another mod (ctxbar's task icon) sees of the pane: the mod is here, the pane up or not, and the pending tasks at
+// the last read (null before one).
 export type TodoBadge = {
   available: boolean
   open: boolean
-  pending: { total: number; by: Record<string, number> } | null
-  folder: string | null
+  pending: { total: number } | null
 }
 // `$.todo.toggle()`: opens the task pane, or closes it when it is up, as a bare `/todo` does; answers the badge after
 export type Todo = { toggle: () => Promise<TodoBadge> }
@@ -59,14 +54,12 @@ declare module 'claude-code' {
   interface PluginState {
     todo: {
       tasksOpen: boolean // the task pane is drawn
-      tasksPending: Shaped<{ total: number; by: Record<string, number> } | null> // pending tasks at the last read, in all and by folder label; null before one
-      tasksFolder: string | null // the selected folder's label; null, or one gone (an earlier build's All, ''): the pane shows the first folder
+      tasksPending: Shaped<{ total: number } | null> // pending tasks at the last read; null before one
       tasksView: Shaped<TasksView>
       tasksFocus: string | null // the element key the pane's focus ring holds; read only on a key press
       tasksTop: Shaped<{ top: number; at: number; n: number } | null> // the list's first entry when the pane moved it, the engine's window then, and its number
-      tasksSent: Shaped<Record<string, number>> // the tasks sent this session (folder, title, copy) → prompts their tint has left
-      tasksColours: Record<string, number> // folder name (trimmed, lower case) → its HUES index; kept in $.store too
-      badge: TodoBadge // what another mod's icon reads (ctxbar's) — kept current on every open, close, read and folder choice
+      tasksColours: Shaped<Record<string, number>> // a project's task file path → its HUES index; kept in $.store too (`projectColours`)
+      badge: TodoBadge // what another mod's icon reads (ctxbar's) — kept current on every open, close and read
     }
   }
 }

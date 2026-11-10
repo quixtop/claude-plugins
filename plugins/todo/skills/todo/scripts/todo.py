@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # (c) Shrix
 # author: shrix
-"""todo backend: personal todo list manager.
+"""todo backend: a project's todo list manager.
 
-Default file: ~/md/todo.md (`## Name` lines are folders). Configurable via the
-`path` subcommand; the active path is persisted in the skill's own folder
-(<skill>/config, beside scripts/).
+The file is <project root>/.claude/todo.md: the git root of the working folder (the main
+checkout's for a worktree), else the working folder itself. One flat list; any `## Name`
+headings in it still read as folders.
 
 Usage:
   todo.py                              # list
@@ -15,10 +15,7 @@ Usage:
   todo.py uncheck <num>[, <num>...]    # flip done items back to pending
   todo.py clear                        # wipe all done items
   todo.py search <words>               # tasks holding every word, numbered as listed
-  todo.py path                         # show current path
-  todo.py path <new>                   # set path (persistent)
-  todo.py path reset                   # restore default
-  todo.py help                         # show full help (also h, -h, --help)
+  todo.py help                        # show full help (also h, -h, --help)
 
 Items are numbered CONTINUOUSLY: pending 1..P first, then done P+1..P+D.
 All operations that take numbers (remove, completed, uncheck) use this
@@ -28,7 +25,7 @@ N refers to an already-done item; `uncheck N` errors if N is still pending.
 Any non-empty prefix of a subcommand works. Collision note: `c` resolves
 to `completed` (checked first); `cl` or longer
 is required to reach `clear` via prefix matching. Other canonicals have
-unique first letters (a/r/p/h/u/s). Single-char alias: `x` → `clear`
+unique first letters (a/r/h/u/s). Single-char alias: `x` → `clear`
 (so `-x` is the short option for clear, since `clear`'s own letter `c`
 collides with `completed`).
 
@@ -44,7 +41,6 @@ muscle memory. Examples:
   /todo --add item1    → add item1
   /todo -r 3           → remove 3
   /todo -c 4           → completed 4
-  /todo -p path1       → path path1
   /todo -h             → help
 
 Batches are comma-separated. Numbers are resolved against the CURRENT display
@@ -80,37 +76,38 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import time
 import unicodedata
 
 atexit.register(lambda: sys.stdout.isatty() and print())   # trailing gap, TTY only
 
-DEFAULT_TODO_PATH = os.path.expanduser("~/md/todo.md")
-# beside the skill, wherever it is installed; links resolved, so a linked script keeps the real one's
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "config")
+GIT_TIMEOUT_S = 2     # a local rev-parse takes milliseconds; a stuck one never holds the pane up
 ITEM_RE = re.compile(r"^- \[( |x|X)\] (.+)$")   # `X`, as GitHub and other editors write it, is done too
 
 
+def project_root(start):
+    """The folder whose tasks a session in `start` shows: its git root, the main checkout's for a
+    worktree, so every session of a project shares one list; `start` itself outside git."""
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")}   # a hook's: not this folder's
+
+    def git(*args):
+        try:
+            done = subprocess.run(["git", "-C", start, "rev-parse", *args],
+                                  capture_output=True, text=True, timeout=GIT_TIMEOUT_S, env=env)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+    common = git("--path-format=absolute", "--git-common-dir")
+    if common and os.path.basename(common) == ".git":
+        return os.path.dirname(common)
+    return git("--show-toplevel") or start
+
+
 def get_todo_path():
-    """Return the currently configured todo file path (absolute)."""
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            configured = f.readline().strip()
-        if configured:
-            return os.path.expanduser(configured)
-    return DEFAULT_TODO_PATH
-
-
-def set_config_path(abs_path):
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        f.write(abs_path + "\n")
-
-
-def clear_config_path():
-    if os.path.exists(CONFIG_PATH):
-        os.remove(CONFIG_PATH)
+    """The task file of the project the working folder belongs to (absolute)."""
+    return os.path.join(project_root(os.getcwd()), ".claude", "todo.md")
 
 
 def display_path(path):
@@ -586,12 +583,15 @@ def cmd_add(args):
     if not texts:
         usage()
     for text in texts:               # one line each: a break would write a heading or a task of its own
-        if _text_ok(text, TITLE_MAX) is None:
+        if _text_ok(text) is None:
             fail(f"❌ {TITLE_MESSAGE}, on one line with no control characters")
     path = get_todo_path()          # resolved once: lock, read and write the same file
     with locked(path):
         lines, ends = read_text(path)
+        before = list(lines)
         add_to_first_folder(lines, ends, [f"- [ ] {text}" for text in texts])
+        if not _fits(path, lines) and _fits(path, before):
+            fail(f"❌ {TOO_LARGE}")
         write_text(path, lines, ends)
     echo(f"add {', '.join(texts)}")
     print(render(lines))
@@ -678,36 +678,9 @@ def cmd_clear(args):
     print(render(lines))
 
 
-def show_path_line():
-    current = get_todo_path()
-    suffix = " (default)" if current == DEFAULT_TODO_PATH else ""
-    print(f"📍 {display_path(current)}{suffix}")
-
-
-def cmd_path(args):
-    # bare `path` → just show current, no echo, no list
-    if not args:
-        show_path_line()
-        return
-    arg = " ".join(args).strip()
-    if arg == "reset":
-        clear_config_path()
-        echo("path reset")
-        show_path_line()
-        print(render(read_lines()))
-        return
-    # set: expand ~, resolve to absolute
-    new_path = os.path.abspath(os.path.expanduser(arg))
-    set_config_path(new_path)
-    echo(f"path {arg}")
-    show_path_line()
-    print(render(read_lines()))
-
-
 def cmd_help():
     current = get_todo_path()
-    suffix = " (default)" if current == DEFAULT_TODO_PATH else ""
-    print("""**/todo** — personal todo manager
+    print("""**/todo** — the project's todo manager
 
 Commands:
   /todo                                 show list
@@ -717,9 +690,6 @@ Commands:
   /todo uncheck <num>[, <num>...]       flip done item(s) back to pending
   /todo clear                           wipe all done items
   /todo search <words>                  find tasks (pending, then done struck)
-  /todo path                            show current file path
-  /todo path <new-path>                 set file path (persistent)
-  /todo path reset                      restore default (~/md/todo.md)
   /todo help | -h | --help              show this help
 
 Numbering: items are numbered CONTINUOUSLY — pending first (1..P), then
@@ -732,13 +702,12 @@ Shorthand: any non-empty prefix works —
   r / re / rem / remo / remov / remove
   c / co / ... / completed           ← `c` stays mapped to completed
   cl / cle / clea / clear             ← `clear` via prefix starts at `cl`
-  p / pa / pat / path
   u / un / unc / ... / uncheck
   h / he / hel / help
   s / se / sea / ... / search
 
 Flag syntax (POSIX/GNU-aligned):
-  -X     single dash + one char       e.g. -a, -r, -c, -p, -h, -u, -x, -s
+  -X     single dash + one char       e.g. -a, -r, -c, -h, -u, -x, -s
   --XYZ  double dash + multi-char     e.g. --add, --remove, --clear
 Multi-char forms with a single dash (e.g. `-add`, `-rem`) are rejected
 because POSIX reads them as option clustering. Special: `-x` is the
@@ -770,7 +739,7 @@ Notes:
   • `completed N` errors if N is already done; `uncheck N` errors if N is still pending.
   • `add Hello, world` creates TWO items (comma is the batch separator).
 """)
-    print(f"📍 {display_path(current)}{suffix}")
+    print(f"📍 {display_path(current)}")
 
 
 def fail(msg):
@@ -831,8 +800,8 @@ def main(argv):
     if not sub:  # catches None (malformed dash form) and empty string
         usage()
     rest = argv[2:]
-    # Shorthand: any non-empty prefix of add/remove/completed/clear/path/uncheck/help/search.
-    # Eight canonicals, seven unique first letters: a/r/c/p/u/h/s (c is shared —
+    # Shorthand: any non-empty prefix of add/remove/completed/clear/uncheck/help/search.
+    # Seven canonicals, six unique first letters: a/r/c/u/h/s (c is shared —
     # completed is checked before clear so `c` → completed;
     # `cl`+ reaches clear via prefix matching, and `-x` reaches it via alias).
     if "add".startswith(sub):
@@ -851,8 +820,6 @@ def main(argv):
         cmd_completed(rest)
     elif "clear".startswith(sub):
         cmd_clear(rest)  # takes no args; bare `clear` wipes all done items
-    elif "path".startswith(sub):
-        cmd_path(rest)  # bare `path` is valid (show current)
     elif "uncheck".startswith(sub):
         if not rest:
             usage()
@@ -869,13 +836,21 @@ def main(argv):
 JSON_VERSION = 1
 MAX_READ_BYTES = 3 * 1024 * 1024     # a bigger file is refused before it is parsed
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024 - 64 * 1024   # the pane reads at most 4 MiB of stdout
-TITLE_MAX, FOLDER_MAX = 500, 60
+TOO_LARGE = f"That would make the task file too large to read back (over {MAX_READ_BYTES // 2**20} MiB) — nothing saved"
+
+
+def _fits(path, lines):
+    """A task has no length limit, but the file does: false when `lines`, written, would be past
+    MAX_READ_BYTES, or the list past MAX_OUTPUT_BYTES as JSON — a file the pane could not read back."""
+    if sum(len(line.encode("utf-8")) + 2 for line in lines) > MAX_READ_BYTES:   # + a CRLF at most
+        return False
+    return len(json.dumps(json_state(path, lines))) <= MAX_OUTPUT_BYTES
+
+
 BREAKS = (   # line breaks that are not control characters: U+2028, U+2029 (written raw)
 " ", " ")
-RESERVED_LABELS = (TOP_LABEL, UNNAMED_LABEL)
 EXIT = {"input": 1, "read": 2, "write": 2, "busy": 2, "conflict": 3, "internal": 4}
-TITLE_MESSAGE = f"A task needs 1–{TITLE_MAX} characters, its first line not blank"
-FOLDER_MESSAGE = f"A folder name needs 1–{FOLDER_MAX} characters on one line, not All or an existing name"
+TITLE_MESSAGE = "A task needs some text, its first line not blank"
 
 
 class Refused(Exception):
@@ -896,45 +871,27 @@ def _nth(text):
     return int(text)
 
 
-def _text_ok(value, limit):
-    """The value trimmed of spaces when it is 1–limit code points on one line with no
+def _text_ok(value):
+    """The value trimmed of spaces when it is at least one code point on one line with no
     control character and encodes as UTF-8; else None."""
     try:
         value.encode("utf-8")
     except UnicodeEncodeError:
         return None
     value = value.strip(" ")
-    if not 1 <= len(value) <= limit or any(
-            c in BREAKS or unicodedata.category(c) == "Cc" for c in value):
+    if not value or any(c in BREAKS or unicodedata.category(c) == "Cc" for c in value):
         return None
     return value
 
 
 def _check_title(value):
     """A title of one or more lines (joined by `\\n`): each line trimmed of spaces, blank ones
-    dropped, the first not blank, each as `_text_ok` asks, 1–TITLE_MAX code points in all."""
+    dropped, the first not blank, each as `_text_ok` asks; no length limit (owner 4 Nov 2026)."""
     first, *rest = value.split("\n")
-    kept = [_text_ok(first, TITLE_MAX)] + [_text_ok(line, TITLE_MAX) for line in rest if line.strip(" ")]
-    title = None if None in kept else "\n".join(kept)
-    if title is None or len(title) > TITLE_MAX:
+    kept = [_text_ok(first)] + [_text_ok(line) for line in rest if line.strip(" ")]
+    if None in kept:
         raise Refused("input", TITLE_MESSAGE)
-    return title
-
-
-def _check_folder_text(value):
-    """The checks that need no file: a name `parse` would read back unchanged."""
-    name = _text_ok(value, FOLDER_MAX)
-    if name is None or name != name.strip() or name.casefold() == "all" or name in RESERVED_LABELS:
-        raise Refused("input", FOLDER_MESSAGE)
-    return name
-
-
-def _check_folder(value, folders, keep=None):
-    name = _check_folder_text(value)
-    taken = {x.casefold() for f in folders if f is not keep for x in (f.name, f.label)}
-    if name.casefold() in taken:
-        raise Refused("input", FOLDER_MESSAGE)
-    return name
+    return "\n".join(kept)
 
 
 def _read_for_json(path):
@@ -1006,25 +963,13 @@ def _insert_in(lines, ends, folder, bodies):
         lines[pos:pos] = [body + _ending(lines[pos - 1]) for body in bodies]
 
 
-def _named_folder(folders, label):
-    folder = _folder(folders, label)
-    if folder is None:
-        raise Refused("input", f"No folder '{label}'")
-    if folder.heading is None:
-        raise Refused("input", "The top folder can't be renamed or deleted")
-    return folder
-
-
 def _edit(op, args, lines, ends, path):
     """Apply one edit to lines, in place."""
     last = lines[-1] if lines else None
     folders = parse(lines)
     if op == "add":
         title = _check_title(args.values[0])
-        if not folders:              # no file, or no task or folder in it yet: `--folder` is not
-            if lines and _bare(lines[-1]).strip():     # read — the first task starts folder `gen`
-                append_line(lines, ends, "")
-            append_line(lines, ends, "## gen")
+        if not folders:              # no file, or no task in it yet: `--folder` is not read
             for body in item_lines("- [ ] ", title):
                 append_line(lines, ends, body)
             return
@@ -1064,7 +1009,7 @@ def _edit(op, args, lines, ends, path):
                 moved = first + (second_end - second) - 1
                 lines[moved] = _bare(lines[moved]) + "\r"
                 lines[-1] = _bare(lines[-1]) + (_ending(lines[-1]) if ends else "")
-    elif op in ("tick", "untick", "rename", "move", "delete"):
+    elif op in ("tick", "untick", "rename", "delete"):
         index = _target(folders, args.folder, args.values[0], args.nth)
         end = item_end(lines, index)
         line = lines[index]
@@ -1083,37 +1028,9 @@ def _edit(op, args, lines, ends, path):
             log_deleted(path, [old[k] for k in range(1, len(old)) if k >= len(new) or new[k] is not old[k]])
             lines[index:end] = new
         else:
-            if op == "move":
-                to = _folder(folders, args.values[1])
-                if to is None or to.label == args.folder or (to.heading is None and has_headings(folders)):
-                    raise Refused("input", f"No other folder '{args.values[1]}'")
             block = lines[index:end]
             del lines[index:end]
-            if op == "move":
-                _insert_in(lines, ends, _folder(parse(lines), args.values[1]), [_bare(l) for l in block])
-            else:
-                log_deleted(path, block)
-    elif op == "folder-add":
-        name = _check_folder(args.values[0], folders)
-        if lines and _bare(lines[-1]).strip():
-            append_line(lines, ends, "")
-        append_line(lines, ends, f"## {name}")
-    elif op == "folder-rename":
-        folder = _named_folder(folders, args.values[0])
-        name = _check_folder(args.values[1], folders, keep=folder)
-        lines[folder.heading] = f"## {name}" + _ending(lines[folder.heading])
-    elif op == "folder-delete":
-        folder = _named_folder(folders, args.values[0])
-        end = folder.heading + 1
-        while end < len(lines) and not HEADING_RE.match(_bare(lines[end])):
-            end += 1
-        section = lines[folder.heading:end]
-        items = {i for index, _, _ in folder.items for i in range(index, item_end(lines, index))}   # tasks' lines
-        if any(_bare(l).strip() and folder.heading + k not in items
-               for k, l in enumerate(section) if k):
-            raise Refused("input", f"'{folder.label}' holds lines that are not tasks — edit the file to delete it")
-        log_deleted(path, [l for l in section if _bare(l).strip()])
-        del lines[folder.heading:end]
+            log_deleted(path, block)
     # A removed last line leaves no bare CR at the end; one the edit never touched keeps its bytes.
     # CPython shares one object for each one-character string, so a lone "\r" can't be told apart.
     if not ends and lines and (lines[-1] is not last or len(lines[-1]) == 1):
@@ -1123,14 +1040,11 @@ def _edit(op, args, lines, ends, path):
 def _parser():
     parser = _Args(prog="todo.py --json", add_help=False)
     subs = parser.add_subparsers(dest="op")
-    for op, nvalues, in_folder, has_nth in (
-            ("add", 1, True, False), ("tick", 1, True, True), ("untick", 1, True, True),
-            ("rename", 2, True, True), ("move", 2, True, True), ("delete", 1, True, True),
-            ("up", 1, True, True), ("down", 1, True, True),
-            ("folder-add", 1, False, False), ("folder-rename", 2, False, False), ("folder-delete", 1, False, False)):
+    for op, nvalues, has_nth in (
+            ("add", 1, False), ("tick", 1, True), ("untick", 1, True), ("rename", 2, True),
+            ("delete", 1, True), ("up", 1, True), ("down", 1, True)):
         sp = subs.add_parser(op, add_help=False)
-        if in_folder:
-            sp.add_argument("--folder", required=True)
+        sp.add_argument("--folder", required=True)
         if has_nth:
             sp.add_argument("--nth", type=_nth, required=True)
         sp.add_argument("values", nargs=nvalues)
@@ -1150,10 +1064,6 @@ def _precheck(opts):
         _check_title(opts.values[0])
     elif opts.op in ("rename", "insert"):
         _check_title(opts.values[1])
-    elif opts.op == "folder-add":
-        _check_folder_text(opts.values[0])
-    elif opts.op == "folder-rename":
-        _check_folder_text(opts.values[1])
 
 
 def _emit(obj, saved=False):
@@ -1242,6 +1152,8 @@ def json_main(args):
                     _edit(opts.op, opts, lines, ends, path)
                     token = None
                     if lines != before:          # no change: no write, so .prev keeps the last edit
+                        if not _fits(path, lines) and _fits(path, before):   # one already past it can still shrink
+                            raise Refused("input", TOO_LARGE)
                         try:
                             write_text(path, lines, ends)
                         except OSError as e:

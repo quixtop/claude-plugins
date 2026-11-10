@@ -23,7 +23,7 @@ import type { Diff, Limit, Reading, Slice, Work } from '../types'
 import {
   CHIP_GREY, DOT_PX, EASE_S, FINISH_MS, IDLE, LANE_H, PILL_H, WIDER_AT_MS, addShell, agentRest, agentStep, callOver, clearSvg, targetOf, chipSvg, clockSvg, clockTime, dotColour, dotSvg, elapsed, ended, isRunning,
   gyrOf, laneCells, lanePill, laneSvg, lighten, liveCount, pillSize, pillSvg, promptCall, timeTagInk, tagSvg, tagWidth, textSvg,
-  isNaming, laneTag, lanesOf, onShow, runTime, settle, shellsFrom, trailGrowth, waveSeconds, withAgents,
+  isNaming, laneTag, lanesOf, onShow, runTime, settle, shellsFrom, trailGrowth, waveSeconds, withAgents, withoutEnded,
 } from './work'
 import type { InFlight } from './work'
 
@@ -187,17 +187,11 @@ const work = atom({ plugin: 'ctxbar', key: 'work' } as const, IDLE)
 // What the todo mod publishes for the task icon (its `badge`), read as any mod's value may be:
 // ctxbar does not depend on that mod, so its contract is not typed here, and without it the
 // value stays null and no task icon is drawn.
-type PendingCount = { total: number; by: Record<string, number> } // the pending tasks at the pane's last read: in all, and by folder label
-type TodoBadge = { available: boolean; open: boolean; pending: PendingCount | null; folder: string | null }
+type PendingCount = { total: number } // the project's pending tasks at the pane's last read
+type TodoBadge = { available: boolean; open: boolean; pending: PendingCount | null }
 const todoBadge = atom({ plugin: 'todo', key: 'badge' } as never, null)
-// The task icon's hover tag: the folder chosen in the pane, by name, and its count; all folders
-// before one is chosen this session, or once it is gone (owner 31 Oct 2026); `tasks` before the
-// session's first read.
-export function iconTag(pending: PendingCount | null, folder: string | null): string {
-  if (pending === null) return 'tasks'
-  const inFolder = folder !== null && Object.hasOwn(pending.by, folder) ? pending.by[folder] : undefined // never a name like `toString`
-  return inFolder === undefined ? `tasks · ${pending.total} pending` : `tasks · ${folder} · ${inFolder} pending`
-}
+// The task icon's hover tag: the project's pending count; `tasks` before the session's first read.
+export const iconTag = (pending: PendingCount | null): string => pending === null ? 'tasks' : `tasks · ${pending.total} pending`
 // The icon's press and `/ctxbar tasks`: that mod's own switch, `$.todo.toggle()`, untyped here (no
 // dependency); its answer is the badge after. A failure is swallowed (null) so the bar never breaks
 // on it.
@@ -552,12 +546,21 @@ async function refreshAgents($: EngineInterface, change: { stopped?: string; sta
   await setWork($, (w, now) => withAgents(w, list, now, change))
 }
 
+const AGENT_CHECK_MS = 10_000 // a lane can outlast its dead subagent by this much: a choice, the list's read being cheap
+let agentsCheckedAt = 0
+
 // One beat of the tick: the time moves on (a terminal draws it anew; the desktop only when
 // something it shows changes), and a task done long enough leaves (the bar goes with the last
-// of them).
+// of them). While a subagent has a lane its list is read again now and then: one that dies with no
+// event (a failed turn sends no stop) would otherwise run the clock on until the next prompt.
 async function beat($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   await stampClock($, now)
+  if ({ ...IDLE, ...(await read($, work)) }.agents.length > 0 && now - agentsCheckedAt >= AGENT_CHECK_MS) {
+    agentsCheckedAt = now
+    const list = await $.agent.list().catch(() => null)
+    if (list) await setWork($, w => withoutEnded(w, list))
+  }
   const w = { ...IDLE, ...(await read($, work)) }
   if (w.finished.some(f => now - f.endedAt >= FINISH_MS)) await setWork($, x => x)
   await deskChanged($, w, now)
@@ -640,6 +643,7 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     const started = await next(e)
     if (e.agentId === undefined) await setWork($, (w, now) => ({ ...w, inTurn: true, turnSince: now, tool: null, steps: 0 })).catch(() => undefined)
+    else await refreshAgents($, { started: e.agentId }).catch(() => undefined) // its loop goes on: a failed turn's mark lifts
     return started
   })
 
@@ -650,7 +654,7 @@ export const register: Register = (on, options) => {
       // a turn stopped or failed before a response may hold an old one's windows: not as of now
       await remeasure($, e.reason === 'answer' || e.reason === 'refusal').catch(() => undefined)
       void remeasureDiff($, true).catch(() => undefined) // a fetch or a push moves the remote's branch, not HEAD
-    } else await refreshAgents($).catch(() => undefined)
+    } else await refreshAgents($, e.reason === 'answer' ? {} : { stopped: e.agentId }).catch(() => undefined) // a turn that failed sends no SubagentStop
     return done
   })
 
@@ -848,7 +852,7 @@ export const register: Register = (on, options) => {
     const cols = e.props.bodyColumns - (hasTodo ? ICON_CELLS : 0) - (hasEnsemble ? ENSEMBLE_CELLS + (Svg ? ENSEMBLE_DESK_CELLS : 0) : 0)
     const isTasksOpen = todo?.open === true
     // Its tag is a chip as the row's other tags are (the tags' grey, a picture on the desktop).
-    const iconTagText = iconTag(todo?.pending ?? null, todo?.folder ?? null)
+    const iconTagText = iconTag(todo?.pending ?? null)
     const tag = (text: string, right: number) => (
       <Box position="absolute" top={0} right={right} display="none" hover={{ display: 'flex' }}>
         {Svg

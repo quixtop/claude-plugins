@@ -1,7 +1,7 @@
 ---
 name: todo
 author: shrix
-description: "(shrix) Personal todo list manager backed by a configurable file (default ~/md/todo.md, folders as ## headings). Use when the user runs /todo to view, add, remove, complete/un-complete items, clear done items, search items, or set the file path. NOT for project task tracking (use proj-tasks)."
+description: "(shrix) The session's project todo list, kept in <project root>/.claude/todo.md. Use when the user runs /todo to view, add, remove, complete/un-complete items, clear done items or search items. NOT the project's task docs (tasks.md, TODO.md: use proj-tasks)."
 metadata:
   version: "2.0"
   category: status
@@ -10,7 +10,7 @@ effort: low
 
 # Todo List (`/todo`)
 
-Personal todo manager. Default file is `~/md/todo.md`; the path can be reconfigured persistently. This skill lives inside the todo mod (at its `skills/todo/`), whose task pane (ctxbar's task icon opens it) edits the same file through `todo.py --json` (its contract is ctxbar's `docs/spec/ctxbar-task-panel.md` § 4.7). That mod also registers `/todo`: typed bare it opens or closes the pane; with words it runs this script with them and shows its output itself.
+Each project has its own list, in `<project root>/.claude/todo.md`, and the working folder decides which: its git root, the main checkout's for a worktree, so every session of a project shares one list; outside git, the folder itself. This skill lives inside the todo mod (at its `skills/todo/`), whose task pane (ctxbar's task icon opens it) edits the same file through `todo.py --json` (its contract is ctxbar's `docs/spec/ctxbar-task-panel.md` § 4.7). That mod also registers `/todo`: typed bare it opens or closes the pane; with words it runs this script with them and shows its output itself.
 
 ## File format
 
@@ -19,7 +19,7 @@ The contract both `/todo` and the task pane keep (ctxbar spec § 4.4):
 - `## Name` starts a folder that runs to the next `## `; lines above the first heading are the top folder.
 - The file is read split on `\n` only, so CRLF lines and the final newline survive every edit; a BOM at the start is read past and kept.
 - Every edit locks `<file>.lock`, copies the file to `<file>.prev` and writes atomically; a removed line goes to `<file>.deleted`. A write that fails leaves the file as it was and no temp file behind (`.prev` is put in place only once the new file is written, just before it replaces the old). A file that is a symlink is written through the link, which stays.
-- `add` takes one line per task, 1–500 characters: text with a line break, a tab or another control character is refused.
+- `add` takes one line per task, of any length: empty text, or text with a line break, a tab or another control character, is refused.
 
 ## Commands
 
@@ -32,27 +32,22 @@ The contract both `/todo` and the task pane keep (ctxbar spec § 4.4):
 | `/todo uncheck <num>[, <num>...]` | Flip done item(s) back to pending |
 | `/todo clear` | Wipe all done items |
 | `/todo search <words>` | The tasks holding every word (any case, any of a task's lines), all folders: pending first, then done struck (`~~…~~`), each as `#N` with its list number — `#N`, not `N.`, as markdown renumbers a list — so `completed N` works next; read-only |
-| `/todo path` | Show the current todo file path |
-| `/todo path <new-path>` | Set the todo file path (persistent) |
-| `/todo path reset` | Restore the default `~/md/todo.md` |
 | `/todo help`, `-h`, `--help` | Show help — full command listing with examples |
 
 **Numbering:** items are **continuously numbered** — pending first (1..P), then done (P+1..P+D). All number-taking commands (`remove`, `completed`, `uncheck`) use this unified scheme. `remove N` works on any item; `completed N` errors if N is already done; `uncheck N` errors if N is still pending. Done items render with ✅ right-aligned in a straight vertical column based on the longest done-item text, so the checkmarks line up regardless of item length.
 
-**Shorthand:** any non-empty prefix of the subcommand works — `a`/`ad`/`add`, `r`/`re`/`rem`/.../`remove`, `c`/`co`/.../`completed`, `cl`/`cle`/.../`clear`, `p`/`pa`/`pat`/`path`, `u`/`un`/.../`uncheck`, `s`/`se`/.../`search`. **Prefix collision note:** `c` resolves to `completed` (checked first in dispatch); to reach `clear` via prefix matching, you need at least `cl`. Other canonicals have unique first letters (a/r/p/h/u/s). **Single-char alias `x` → `clear`:** since `clear`'s natural letter `c` collides with `completed`, the short option `-x` is dedicated to `clear`. So `! todo -x` wipes all done items. Pass whatever the user typed through to the script unchanged; the script resolves the prefix itself.
+**Shorthand:** any non-empty prefix of the subcommand works — `a`/`ad`/`add`, `r`/`re`/`rem`/.../`remove`, `c`/`co`/.../`completed`, `cl`/`cle`/.../`clear`, `u`/`un`/.../`uncheck`, `s`/`se`/.../`search`. **Prefix collision note:** `c` resolves to `completed` (checked first in dispatch); to reach `clear` via prefix matching, you need at least `cl`. Other canonicals have unique first letters (a/r/h/u/s). **Single-char alias `x` → `clear`:** since `clear`'s natural letter `c` collides with `completed`, the short option `-x` is dedicated to `clear`. So `! todo -x` wipes all done items. Pass whatever the user typed through to the script unchanged; the script resolves the prefix itself.
 
 **Flag syntax (POSIX/GNU-aligned):**
-- `-X` — single dash + **exactly one character** (POSIX short option): `-a`, `-r`, `-c`, `-p`, `-h`, `-u` (uncheck), `-x` (clear), `-s` (search)
+- `-X` — single dash + **exactly one character** (POSIX short option): `-a`, `-r`, `-c`, `-h`, `-u` (uncheck), `-x` (clear), `-s` (search)
 - `--XYZ` — double dash + **one or more characters** (GNU long option): `--add`, `--remove`, `--help`, etc.
 - **Rejected:** `-add`, `-rem`, or any single-dash-with-multi-char form — POSIX reads these as option clustering (`-a -d -d`), which this skill does not support. Also rejected: `---foo` (three or more dashes), bare `-`, and bare `--`.
 
 The echo line always shows the canonical resolved form regardless of input style, so `/todo -a item1`, `/todo --add item1`, `/todo a item1`, and `/todo add item1` all produce byte-identical output.
 
-**Configuration:** the active path is stored in `config` in this skill's own folder, beside `scripts/` (one line, just the absolute path). Absent → default (`~/md/todo.md`) is used. `path reset` deletes the config file. Installed as part of the todo plugin, that folder is the plugin's copy, so a plugin update resets a custom path to the default (`/todo path <new-path>` sets it again).
+**Folders:** the list is flat. A `## ` heading written by hand still works here: the list is grouped under folder names (done items carry `· folder`), `add` goes to the first named folder, and echoes name the tasks (`› completed 2 (Buy milk)`). The pane shows all of them as one list.
 
-**Folders:** with a `## ` heading in the file, the list is grouped under folder names (done items carry `· folder`), `add` goes to the first named folder, and echoes name the tasks (`› completed 2 (Buy milk)`). Without one it looks and works exactly as before.
-
-**Restore:** `~/md/todo.md.prev` is the file before the last edit; `~/md/todo.md.deleted` keeps every removed line under a timestamp.
+**Restore:** `.claude/todo.md.prev` is the file before the last edit; `.claude/todo.md.deleted` keeps every removed line under a timestamp.
 
 **Batching:** use `,` to separate multiple items or numbers in one command (not in `search`, where a comma is plain text). Examples:
 - `/todo add Buy milk, Call mom, Write skill`
@@ -80,6 +75,8 @@ Run the bundled script via Bash and pass the user's arguments verbatim:
 ```
 python3 "${CLAUDE_SKILL_DIR}/scripts/todo.py" [args...]
 ```
+
+Run it from the session's starting folder: the working folder picks the project, so a shell `cd` elsewhere would reach another list. In a worktree session the list is the main checkout's, outside the Bash sandbox, so an edit from here can fail with `Operation not permitted`: tell the user to type `/todo <words>` or use the pane, which run outside it.
 
 The script's stdout **is** the response.
 

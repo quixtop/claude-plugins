@@ -1,0 +1,13 @@
+{
+  "name": "amf",
+  "version": "0.1.0",
+  "description": "AMF — the Agent Management Framework for Claude Code agents. Say \"install AMF\" and it installs, starts and opens AMF's board on your Mac.",
+  "author": {
+    "name": "quixtop",
+    "url": "https://www.quixtop.com"
+  },
+  "homepage": "https://amf.quixtop.com",
+  "repository": "https://github.com/quixtop/claude-plugins",
+  "license": "MIT",
+  "keywords": ["amf", "agents", "claude-code", "homebrew", "macos"]
+}

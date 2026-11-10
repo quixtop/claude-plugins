@@ -14,6 +14,7 @@ export const IDLE: Work = {
 // At work now: a subagent parked for a message it may never get (`waiting`, `idle`: one
 // that can be resumed) is not running, and neither is a finished one.
 const LIVE = new Set(['pending', 'running'])
+const ENDED = new Set(['completed', 'failed', 'killed'])
 // Background shells only: a monitor watches rather than works (an artifact's live-updates watch
 // lasts the whole session), so it never holds the running row.
 const SHELL_TYPES = new Set(['shell'])
@@ -184,6 +185,12 @@ export function withAgents(w: Work, list: readonly AgentRow[], now: number, chan
   const stopped = new Set(w.stopped.filter(id => id !== change.started && listed.has(id)))
   if (change.stopped !== undefined && listed.has(change.stopped)) stopped.add(change.stopped)
   return { ...w, stopped: [...stopped], agents: agentsFrom(w.agents, list.filter(a => !stopped.has(a.id) && a.id !== change.stopped), now) }
+}
+
+// The record less the subagents that ended or left the list: for a read no event asked for, which must
+// spare a parked one (`waiting`: on work of its own; it owes more, and may wake with no event).
+export function withoutEnded(w: Work, list: readonly AgentRow[]): Work {
+  return { ...w, agents: w.agents.filter(a => list.some(row => row.id === a.id && !ENDED.has(row.status))) }
 }
 
 // A background shell a call just started, until the next reading of the engine's list.

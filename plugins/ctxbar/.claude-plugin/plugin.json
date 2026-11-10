@@ -1,6 +1,6 @@
 {
   "name": "ctxbar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The context window as one row above the prompt, a colour per category, opened by the plan's weekly usage with its reset countdown; hover a segment or a figure for its name. While work runs, a running bar with a lane per task (turn, background shells, subagents). Steps aside while another mod draws above the prompt. /ctxbar shows or hides it. With the todo mod loaded, a task icon closes both rows and opens or closes that mod's task pane over the /todo list ($.todo.toggle(), its badge for the pending count); /ctxbar tasks does it at any width. With the ensemble mod loaded and a ledger here, an Ensemble icon just before it opens that mod's pane.",
   "author": { "name": "shrix" },
   "keywords": ["mod"],

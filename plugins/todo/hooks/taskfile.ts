@@ -1,36 +1,25 @@
 // (c) Shrix
 // author: shrix
 // The task pane's pure helpers: the argv that runs todo.py, the check of the JSON it prints,
-// the order the pane lists tasks in, and the same limits on a title and a folder name that
-// todo.py applies (spec ~/.agents/skills/ctxbar/docs/spec/ctxbar-task-panel.md § 4.4, 4.7, 4.8, FR4).
+// the order the pane lists tasks in, and the same checks on a title that todo.py applies
+// (spec ~/.agents/skills/ctxbar/docs/spec/ctxbar-task-panel.md § 4.4, 4.7, 4.8, FR4).
 import type { ErrorKind, FolderView, Item, TaskError, TaskState } from '../types'
 
 export type { ErrorKind, FolderView, Item, TaskError, TaskState }
 export const JSON_VERSION = 1
-export const TITLE_MAX = 500
-export const FOLDER_MAX = 60
 
 export type TaskOp =
   | { op: 'add'; folder: string; title: string }
   | { op: 'tick' | 'untick' | 'delete' | 'up' | 'down'; folder: string; nth: number; title: string }
   | { op: 'rename'; folder: string; nth: number; title: string; to: string }
   | { op: 'insert'; folder: string; nth: number; title: string; to: string; where: 'before' | 'after' } // a new task `to` next to `title`, in file order
-  | { op: 'folder-add'; name: string }
-  | { op: 'folder-rename'; from: string; to: string }
-  | { op: 'folder-delete'; name: string }
   | { op: 'undo'; token: string } // the last save's undo token
 
 // The todo skill's script: the skill lives inside this mod, at skills/todo/ (owner 1Nov26: one todo, not two).
 export const bundledTodoPy = (root: string): string => `${root}/skills/todo/scripts/todo.py`
 
-// Where the focus ring goes once a field (not a rename) saves: a new task's, onto `editKey` while a
-// task is selected, so Enter edits it (owner 30 Oct 2026); else, and for a folder field, onto the
-// ▼. Never onto the +, where Enter would open a new task.
-export const ringAfterSave = (field: string, selected: boolean, editKey: string): string =>
-  field.startsWith('add:') && selected ? editKey : 'pick'
-
-// The pending tasks at the last read: in all, and by folder label.
-export type PendingCount = { total: number; by: Record<string, number> }
+// The pending tasks at the last read.
+export type PendingCount = { total: number }
 
 // A path as the pane shows it: the home folder as `~`.
 export const tildePath = (path: string, home: string): string =>
@@ -54,11 +43,6 @@ export function argvEdit(py: string, op: TaskOp): string[] {
       return [...head, `--folder=${op.folder}`, `--nth=${op.nth}`, '--', op.title, op.to]
     case 'insert':
       return [...head, `--folder=${op.folder}`, `--nth=${op.nth}`, `--where=${op.where}`, '--', op.title, op.to]
-    case 'folder-add':
-    case 'folder-delete':
-      return [...head, '--', op.name]
-    case 'folder-rename':
-      return [...head, '--', op.from, op.to]
     case 'undo':
       return [...head, `--token=${op.token}`]
   }
@@ -123,8 +107,8 @@ export const newestFirst = (items: Item[]): Item[] => [...items].reverse()
 // its lines. toLowerCase, never the locale's, to agree with todo.py's str.lower() (search_matches).
 export const queryWords = (query: string): string[] => query.toLowerCase().split(/\s+/).filter(Boolean)
 
-// What the person's Esc (or the pane's close mark) does, in order: leave an open field, question or
-// folder list; else close an open search; else undo a change of the last 10 s, or close the pane.
+// What the person's Esc (or the pane's close mark) does, in order: leave an open field; else close
+// an open search; else undo a change of the last 10 s, or close the pane.
 export const escapeStep = (editOpen: boolean, search: string | null | undefined): 'edit' | 'search' | 'undo-or-close' =>
   editOpen ? 'edit' : search != null ? 'search' : 'undo-or-close'
 
@@ -133,9 +117,8 @@ export function matches(title: string, query: string): boolean {
   return queryWords(query).every(word => text.includes(word))
 }
 
-// The pre-check mirrors todo.py's (`_text_ok`, `_check_folder_text`) so the pane never sends
-// text todo.py would refuse; todo.py stays the authority. Known limit: names compare with
-// toLowerCase here and casefold there (ß), so todo.py may still refuse a rare name.
+// The pre-check mirrors todo.py's (`_text_ok`) so the pane never sends text todo.py would refuse;
+// todo.py stays the authority.
 const BREAKS = [' ', ' '] // line breaks that are not control characters
 const C0_END = 0x20
 const C1 = [0x7f, 0x9f] // DEL and the C1 controls, Unicode category Cc with C0
@@ -144,66 +127,64 @@ const isControl = (c: string) => {
   return n < C0_END || (n >= C1[0]! && n <= C1[1]!)
 }
 const isLoneSurrogate = (c: string) => c.length === 1 && c.charCodeAt(0) >= 0xd800 && c.charCodeAt(0) <= 0xdfff
-// Python's str.strip() whitespace: what todo.py refuses at a folder name's edges.
-const EDGE_SPACE = /^[\s\u001c-\u001f\u0085]|[\s\u001c-\u001f\u0085]$/u
-const RESERVED = ['(no folder)', '(unnamed)']
-
-function spaceTrimmed(s: string, limit: number): string | null {
+// A task's line has no length limit (owner 4 Nov 2026).
+function spaceTrimmed(s: string): string | null {
   const t = s.replace(/^ +| +$/g, '')
   const chars = [...t] // code points, as todo.py counts
-  const ok = chars.length >= 1 && chars.length <= limit &&
-    !chars.some(c => BREAKS.includes(c) || isControl(c) || isLoneSurrogate(c))
+  const ok = chars.length >= 1 && !chars.some(c => BREAKS.includes(c) || isControl(c) || isLoneSurrogate(c))
   return ok ? t : null
 }
 
-export const TITLE_MESSAGE = `A task needs 1–${TITLE_MAX} characters, its first line not blank`
-export const FOLDER_MESSAGE = `A folder name needs 1–${FOLDER_MAX} characters on one line, not All or an existing name`
+export const TITLE_MESSAGE = 'A task needs some text, its first line not blank'
 
 // A title may take several lines (todo.py's `_check_title`): each trimmed of spaces, blank ones
-// dropped, the first not blank, each as a one-line title is, TITLE_MAX code points in all.
+// dropped, the first not blank, each as a one-line title is.
 export function checkTitle(s: string): string | null {
   const [first = '', ...rest] = s.split('\n')
-  const kept = [spaceTrimmed(first, TITLE_MAX), ...rest.filter(line => line.replace(/ /g, '') !== '').map(line => spaceTrimmed(line, TITLE_MAX))]
-  if (kept.includes(null)) return TITLE_MESSAGE
-  return [...kept.join('\n')].length > TITLE_MAX ? TITLE_MESSAGE : null
+  const kept = [spaceTrimmed(first), ...rest.filter(line => line.replace(/ /g, '') !== '').map(line => spaceTrimmed(line))]
+  return kept.includes(null) ? TITLE_MESSAGE : null
 }
 
-// `existing` holds every folder's name and label; `keep` is the folder being renamed, so a
-// change of case of its own name passes.
-export function checkFolder(s: string, existing: string[], keep?: string): string | null {
-  const name = spaceTrimmed(s, FOLDER_MAX)
-  if (name === null || EDGE_SPACE.test(name) || name.toLowerCase() === 'all' || RESERVED.includes(name)) return FOLDER_MESSAGE
-  const taken = existing.filter(e => e !== keep).map(e => e.toLowerCase())
-  return taken.includes(name.toLowerCase()) ? FOLDER_MESSAGE : null
-}
+// The lines `text` takes in a column `width` cells wide: each of its lines wrapped, at least one each.
+export const wrappedLines = (text: string, width: number): number =>
+  text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil([...line].length / width)), 0)
 
-// A folder's colour is kept by name, compared as todo.py compares names (A11).
-export const colourKey = (name: string): string => name.trim().toLowerCase()
+const LINE_MARGIN = 10 // owner 6 Nov 2026: a field shows its next line this many cells before the current one ends
 
-// The colour each folder in `names` (file order) keeps: its own while it has a valid one, else
-// the least used of `hues` (the first on a tie), so new folders differ while colours are free.
-// A gone folder frees its colour; `rename` (folder names) carries one across a rename made in the
-// pane, and a folder still holding the old name keeps it too. Prototype-free maps: a folder may be
-// called `constructor` or `__proto__`.
-export function assignColours(was: Record<string, number>, names: string[], hues: number, rename?: { from: string; to: string }): Record<string, number> {
-  const kept: Record<string, number> = Object.assign(Object.create(null), was)
-  const from = rename ? colourKey(rename.from) : ''
-  if (rename && from !== colourKey(rename.to) && from in kept) kept[colourKey(rename.to)] = kept[from]!
-  const next: Record<string, number> = Object.create(null)
-  const uses = new Array<number>(hues).fill(0)
-  const keys = [...new Set(names.map(colourKey))]
-  for (const k of keys) {
-    const hue = kept[k]
-    if (Number.isInteger(hue) && hue! >= 0 && hue! < hues) {
-      next[k] = hue!
-      uses[hue!]! += 1
+// How tall a task field is drawn: a row for every line `text` takes `width` wide, counting LINE_MARGIN more at its
+// end, and never under two: only two rows or more hold several lines, and a desktop's one-row field is narrower.
+export const fieldRows = (text: string, width: number): number =>
+  Math.max(2, wrappedLines(text + ' '.repeat(LINE_MARGIN), width))
+
+// A task's title as the list shows it: whole while it takes at most `most` lines `width` wide, else cut
+// there with an ellipsis (its field shows all of it). The pane draws one tree of at most 100,000
+// characters, so a task with no length limit can never be drawn whole.
+export function shownTitle(title: string, width: number, most: number): string {
+  if (wrappedLines(title, width) <= most) return title
+  const kept: string[] = []
+  let left = most
+  for (const line of title.split('\n')) {
+    const chars = [...line]
+    const takes = Math.max(1, Math.ceil(chars.length / width))
+    if (takes < left) {
+      kept.push(line)
+      left -= takes
+      continue
     }
+    kept.push(`${chars.slice(0, left * width - 1).join('')}…`) // the last line left: cut, the ellipsis in its last cell
+    break
   }
-  for (const k of keys) {
-    if (k in next) continue
-    const hue = uses.indexOf(Math.min(...uses))
-    next[k] = hue
-    uses[hue]! += 1
-  }
-  return next
+  return kept.join('\n')
+}
+
+export const validHue = (hue: unknown, hues: number): hue is number => Number.isInteger(hue) && (hue as number) >= 0 && (hue as number) < hues
+
+// A new project's colour: one of the least used of `hues`, picked at random (`roll`, 0 to below 1), so
+// every colour goes round once before any repeats (owner 6 Nov 2026). `taken`: the colours projects hold.
+export function nextHue(taken: number[], hues: number, roll: number): number {
+  const uses = new Array<number>(hues).fill(0)
+  for (const hue of taken) if (validHue(hue, hues)) uses[hue]! += 1
+  const fewest = Math.min(...uses)
+  const free = uses.flatMap((n, hue) => (n === fewest ? [hue] : []))
+  return free[Math.floor(roll * free.length)]!
 }
